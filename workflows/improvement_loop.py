@@ -46,6 +46,7 @@ def orchestrator(goal: str) -> dict:
         steps_executed=steps_executed,
         plan_type=plan["plan_type"],
         builder_status=build_result["builder_status"],
+        skill_used=build_result["skill_used"],
     )
     log("orchestrator", f"run complete — status: {status}")
     return {"status": status, "steps_executed": steps_executed}
@@ -190,6 +191,7 @@ def skill_curator(
     steps_executed: list[str],
     plan_type: str,
     builder_status: str,
+    skill_used: str | None,
 ) -> str:
     status = "success" if passed else "failed"
     entry = {
@@ -197,6 +199,7 @@ def skill_curator(
         "goal": goal,
         "plan_type": plan_type,
         "builder_status": builder_status,
+        "skill_used": skill_used,
         "status": status,
         "steps_executed": steps_executed,
         "test_command": TEST_COMMAND,
