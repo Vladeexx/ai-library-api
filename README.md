@@ -141,3 +141,11 @@ Tests use an in-memory SQLite database and mock Redis — no running services re
 | `POSTGRES_PASSWORD` | Postgres password (docker-compose only) |
 | `POSTGRES_DB` | Postgres database name (docker-compose only) |
 | `REDIS_URL` | Redis connection URL |
+
+## Development Notes
+
+This project was developed with the assistance of AI tools (ChatGPT and Claude Code) to accelerate implementation and explore different approaches during development.
+
+All architectural decisions, system design, validation, and final integration were performed by the author. The tools were used primarily as productivity aids, similar to how engineers use documentation, reference materials, or developer tools.
+
+The final system was implemented, verified, and tested end-to-end by the author, including containerized setup, database migrations, API functionality, and automated tests.
