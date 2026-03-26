@@ -40,7 +40,13 @@ def orchestrator(goal: str) -> dict:
     passed, steps_executed = tester(build_result)
     if not passed:
         steps_executed = fixer(steps_executed)
-    status = skill_curator(goal, passed, steps_executed)
+    status = skill_curator(
+        goal=goal,
+        passed=passed,
+        steps_executed=steps_executed,
+        plan_type=plan["plan_type"],
+        builder_status=build_result["builder_status"],
+    )
     log("orchestrator", f"run complete — status: {status}")
     return {"status": status, "steps_executed": steps_executed}
 
@@ -124,11 +130,19 @@ def fixer(steps_executed: list[str]) -> list[str]:
     return steps_executed + ["fix attempted"]
 
 
-def skill_curator(goal: str, passed: bool, steps_executed: list[str]) -> str:
+def skill_curator(
+    goal: str,
+    passed: bool,
+    steps_executed: list[str],
+    plan_type: str,
+    builder_status: str,
+) -> str:
     status = "success" if passed else "failed"
     entry = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "goal": goal,
+        "plan_type": plan_type,
+        "builder_status": builder_status,
         "status": status,
         "steps_executed": steps_executed,
         "test_command": TEST_COMMAND,
