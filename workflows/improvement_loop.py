@@ -115,15 +115,42 @@ def planner(goal: str) -> dict:
     return plan
 
 
+SKILL_MAP = {
+    "crud_endpoint": "add_crud_endpoint",
+    "migration": "add_alembic_migration",
+    "generic": None,
+}
+
+SKILLS_DIR = Path(__file__).parent.parent / ".claude" / "skills" / "coding"
+
+
 def builder(plan: dict) -> dict:
     log("builder", "starting execution")
+
+    skill = SKILL_MAP.get(plan["plan_type"])
+    if skill:
+        log("builder", f"using skill: {skill}")
+        skill_file = SKILLS_DIR / f"{skill}.md"
+        if skill_file.exists():
+            skill_file.read_text()
+            log("builder", f"loaded skill definition for {skill}")
+        else:
+            log("builder", "skill definition file not found")
+    else:
+        log("builder", "no specific skill for this plan type")
+
     steps = plan["steps"]
     total = len(steps)
     executed_steps = []
     for i, step in enumerate(steps, start=1):
         log("builder", f"step {i}/{total}: {step}")
         executed_steps.append(step)
-    return {"plan": plan, "executed_steps": executed_steps, "builder_status": "completed"}
+    return {
+        "plan": plan,
+        "executed_steps": executed_steps,
+        "builder_status": "completed",
+        "skill_used": skill,
+    }
 
 
 def tester(build_result: dict) -> tuple[bool, list[str]]:
