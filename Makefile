@@ -7,10 +7,10 @@ db:
 	docker compose up db redis
 
 migrate:
-	docker compose exec api alembic upgrade head
+	docker compose run --rm migrate
 
 test:
-	docker compose exec api pytest
+	docker compose run --rm api pytest
 
 logs:
 	docker compose logs -f api

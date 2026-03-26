@@ -55,8 +55,8 @@ Interactive docs at http://localhost:8000/docs
 |---------|-------------|
 | `make dev` | Build and start the full stack (api, db, redis) |
 | `make db` | Start only db and redis |
-| `make migrate` | Run `alembic upgrade head` inside the api container |
-| `make test` | Run pytest inside the api container |
+| `make migrate` | Run `alembic upgrade head` via a one-shot migrate container |
+| `make test` | Run pytest via a one-shot api container |
 | `make logs` | Tail API container logs |
 | `make down` | Stop all containers |
 
