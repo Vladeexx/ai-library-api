@@ -1,6 +1,6 @@
 # AI Library API
 
-A backend REST API for managing books and recommendations, built with FastAPI, PostgreSQL, and Redis.
+A backend REST API for managing books, built with FastAPI, PostgreSQL, and Redis. Includes Docker, Alembic migrations, pytest tests, and a Makefile-based developer workflow. Designed to be extended with features such as recommendations in future iterations.
 
 ## Architecture
 
