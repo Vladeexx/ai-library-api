@@ -15,6 +15,7 @@ import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Optional
 
 MEMORY_DIR = Path(__file__).parent.parent / "memory"
 RUN_HISTORY = MEMORY_DIR / "run_history.jsonl"
@@ -191,7 +192,7 @@ def skill_curator(
     steps_executed: list[str],
     plan_type: str,
     builder_status: str,
-    skill_used: str | None,
+    skill_used: Optional[str],
 ) -> str:
     status = "success" if passed else "failed"
     entry = {
