@@ -11,13 +11,3 @@ AsyncSessionLocal = async_sessionmaker(engine, expire_on_commit=False, class_=As
 async def get_db() -> AsyncGenerator[AsyncSession, None]:
     async with AsyncSessionLocal() as session:
         yield session
-
-
-async def init_db() -> None:
-    # Import models so their metadata is registered before create_all runs.
-    import app.models.book  # noqa: F401
-
-    from app.models.base import Base
-
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)

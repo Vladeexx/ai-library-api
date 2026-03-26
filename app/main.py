@@ -4,14 +4,11 @@ from fastapi import FastAPI
 
 from app.api.v1.router import router as v1_router
 from app.core.config import settings
-from app.core.database import init_db
 from app.core.redis import close_redis, get_redis
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    if settings.debug:
-        await init_db()
     await get_redis()
     yield
     await close_redis()
