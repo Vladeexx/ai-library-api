@@ -49,6 +49,17 @@ uvicorn app.main:app --reload
 API available at http://localhost:8000
 Interactive docs at http://localhost:8000/docs
 
+## Makefile Commands
+
+| Command | Description |
+|---------|-------------|
+| `make dev` | Build and start the full stack (api, db, redis) |
+| `make db` | Start only db and redis |
+| `make migrate` | Run `alembic upgrade head` inside the api container |
+| `make test` | Run pytest inside the api container |
+| `make logs` | Tail API container logs |
+| `make down` | Stop all containers |
+
 ## Running with Docker
 
 ```bash
