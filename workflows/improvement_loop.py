@@ -71,11 +71,19 @@ def planner(goal: str) -> dict:
     history = _load_run_history()
     prior_runs = [e for e in history if e.get("goal") == goal]
     last_failed = False
+    preferred_skill = None
     if prior_runs:
         last_status = prior_runs[-1].get("status", "unknown")
         log("planner", "previous run detected for goal")
         log("planner", f"last status: {last_status}")
         last_failed = last_status == "failed"
+        successful = [
+            e for e in prior_runs
+            if e.get("status") == "success" and e.get("skill_used")
+        ]
+        if successful:
+            preferred_skill = successful[-1]["skill_used"]
+            log("planner", f"previous successful skill detected: {preferred_skill}")
 
     keywords = goal.lower()
 
@@ -112,7 +120,7 @@ def planner(goal: str) -> dict:
         steps.insert(1, "review previous failure")
         log("planner", "adapting plan based on previous failure")
 
-    plan = {"goal": goal, "plan_type": plan_type, "steps": steps}
+    plan = {"goal": goal, "plan_type": plan_type, "preferred_skill": preferred_skill, "steps": steps}
     log("planner", f"selected plan_type={plan_type!r} with {len(steps)} steps")
     return plan
 
@@ -129,17 +137,23 @@ SKILLS_DIR = Path(__file__).parent.parent / ".claude" / "skills" / "coding"
 def builder(plan: dict) -> dict:
     log("builder", "starting execution")
 
-    skill = SKILL_MAP.get(plan["plan_type"])
+    if plan.get("preferred_skill"):
+        skill = plan["preferred_skill"]
+        log("builder", f"reusing preferred skill from memory: {skill}")
+    else:
+        skill = SKILL_MAP.get(plan["plan_type"])
+        if skill:
+            log("builder", f"using default skill: {skill}")
+        else:
+            log("builder", "no specific skill for this plan type")
+
     if skill:
-        log("builder", f"using skill: {skill}")
         skill_file = SKILLS_DIR / f"{skill}.md"
         if skill_file.exists():
             skill_file.read_text()
             log("builder", f"loaded skill definition for {skill}")
         else:
             log("builder", "skill definition file not found")
-    else:
-        log("builder", "no specific skill for this plan type")
 
     steps = plan["steps"]
     total = len(steps)
