@@ -70,13 +70,13 @@ Interactive docs at http://localhost:8000/docs
 # 1. Configure environment
 cp .env.example .env
 
-# 2. Start db and redis
+# 2. Start db and redis (detached)
 make db
 
 # 3. Apply migrations (one-shot)
 make migrate
 
-# 4. Start the API
+# 4. Start the API (detached)
 make dev
 
 # 5. Run tests (one-shot, no running stack required)
@@ -85,6 +85,8 @@ make test
 # 6. Stop everything
 make down
 ```
+
+Both `make db` and `make dev` start services in detached mode — use `make logs` to follow API output. The API is available at http://localhost:8000 once started.
 
 Hot-reload is enabled via the mounted volume. To also remove the database volume on teardown:
 
