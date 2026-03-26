@@ -19,6 +19,8 @@ from typing import Optional
 
 MEMORY_DIR = Path(__file__).parent.parent / "memory"
 RUN_HISTORY = MEMORY_DIR / "run_history.jsonl"
+KNOWN_FAILURES_FILE = MEMORY_DIR / "known_failures.json"
+SUCCESSFUL_PATTERNS_FILE = MEMORY_DIR / "successful_patterns.json"
 TEST_COMMAND = "make test"
 
 
@@ -51,6 +53,47 @@ def orchestrator(goal: str) -> dict:
     )
     log("orchestrator", f"run complete — status: {status}")
     return {"status": status, "steps_executed": steps_executed}
+
+
+def _load_json_file(path: Path) -> dict:
+    """Load a JSON file, returning an empty dict on any error."""
+    try:
+        text = path.read_text().strip()
+        if not text:
+            return {}
+        return json.loads(text)
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+# Keywords associated with each plan type, used for memory pattern matching.
+_PLAN_KEYWORDS = {
+    "crud_endpoint": {"crud", "endpoint", "router", "schema", "route"},
+    "migration": {"migration", "migrate", "model", "alembic", "column", "table"},
+    "generic": set(),
+}
+
+
+def _find_relevant_patterns(goal: str, plan_type: str) -> list[str]:
+    """
+    Return pattern names from memory files that are relevant to the goal.
+
+    Relevance is determined by simple keyword overlap: a pattern name is
+    included if any word from it appears in the goal, or if the pattern
+    name contains a keyword associated with the current plan type.
+    """
+    goal_words = set(goal.lower().split())
+    type_keywords = _PLAN_KEYWORDS.get(plan_type, set())
+
+    relevant: list[str] = []
+    for source_file in (SUCCESSFUL_PATTERNS_FILE, KNOWN_FAILURES_FILE):
+        data = _load_json_file(source_file)
+        for key in data:
+            key_words = set(key.lower().replace("_", " ").replace("-", " ").split())
+            if key_words & goal_words or key_words & type_keywords:
+                relevant.append(key)
+
+    return relevant
 
 
 def _load_run_history() -> list[dict]:
@@ -120,8 +163,19 @@ def planner(goal: str) -> dict:
         steps.insert(1, "review previous failure")
         log("planner", "adapting plan based on previous failure")
 
-    plan = {"goal": goal, "plan_type": plan_type, "preferred_skill": preferred_skill, "steps": steps}
-    log("planner", f"selected plan_type={plan_type!r} with {len(steps)} steps")
+    relevant_patterns = _find_relevant_patterns(goal, plan_type)
+    plan = {
+        "goal": goal,
+        "plan_type": plan_type,
+        "preferred_skill": preferred_skill,
+        "steps": steps,
+        "relevant_patterns": relevant_patterns,
+    }
+    log(
+        "planner",
+        f"selected plan_type={plan_type!r} with {len(steps)} steps"
+        f" and {len(relevant_patterns)} relevant patterns",
+    )
     return plan
 
 
