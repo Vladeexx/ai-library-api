@@ -68,10 +68,12 @@ def _load_run_history() -> list[dict]:
 def planner(goal: str) -> dict:
     history = _load_run_history()
     prior_runs = [e for e in history if e.get("goal") == goal]
+    last_failed = False
     if prior_runs:
         last_status = prior_runs[-1].get("status", "unknown")
         log("planner", "previous run detected for goal")
         log("planner", f"last status: {last_status}")
+        last_failed = last_status == "failed"
 
     keywords = goal.lower()
 
@@ -103,6 +105,10 @@ def planner(goal: str) -> dict:
             "implement change",
             "run tests",
         ]
+
+    if last_failed:
+        steps.insert(1, "review previous failure")
+        log("planner", "adapting plan based on previous failure")
 
     plan = {"goal": goal, "plan_type": plan_type, "steps": steps}
     log("planner", f"selected plan_type={plan_type!r} with {len(steps)} steps")
