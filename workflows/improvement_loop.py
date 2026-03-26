@@ -46,16 +46,39 @@ def orchestrator(goal: str) -> dict:
 
 
 def planner(goal: str) -> dict:
-    plan = {
-        "goal": goal,
-        "steps": [
+    keywords = goal.lower()
+
+    if any(k in keywords for k in ("crud", "endpoint")):
+        plan_type = "crud_endpoint"
+        steps = [
+            "analyse codebase",
+            "inspect routers",
+            "inspect schemas",
+            "inspect models",
+            "implement endpoint change",
+            "add or update tests",
+            "run tests",
+        ]
+    elif "migration" in keywords:
+        plan_type = "migration"
+        steps = [
+            "analyse codebase",
+            "inspect models",
+            "prepare migration change",
+            "run migrations",
+            "run tests",
+        ]
+    else:
+        plan_type = "generic"
+        steps = [
             "analyse codebase",
             "identify files to create or modify",
             "implement change",
             "run tests",
-        ],
-    }
-    log("planner", f"generated plan with {len(plan['steps'])} steps")
+        ]
+
+    plan = {"goal": goal, "plan_type": plan_type, "steps": steps}
+    log("planner", f"selected plan_type={plan_type!r} with {len(steps)} steps")
     return plan
 
 
