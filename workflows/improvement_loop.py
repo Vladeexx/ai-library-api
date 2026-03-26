@@ -83,14 +83,18 @@ def planner(goal: str) -> dict:
 
 
 def builder(plan: dict) -> dict:
-    log("builder", "executing steps:")
-    for step in plan["steps"]:
-        log("builder", f"  → {step}")
-    return {"plan": plan, "outcome": "build complete"}
+    log("builder", "starting execution")
+    steps = plan["steps"]
+    total = len(steps)
+    executed_steps = []
+    for i, step in enumerate(steps, start=1):
+        log("builder", f"step {i}/{total}: {step}")
+        executed_steps.append(step)
+    return {"plan": plan, "executed_steps": executed_steps, "builder_status": "completed"}
 
 
 def tester(build_result: dict) -> tuple[bool, list[str]]:
-    steps = build_result["plan"]["steps"] + ["run tests"]
+    steps = build_result["executed_steps"] + ["run tests"]
     log("tester", f"running real test suite: {TEST_COMMAND!r}")
 
     result = subprocess.run(
