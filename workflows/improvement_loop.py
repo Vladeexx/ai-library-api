@@ -11,13 +11,14 @@ Usage:
 """
 
 import json
-import random
+import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
 MEMORY_DIR = Path(__file__).parent.parent / "memory"
 RUN_HISTORY = MEMORY_DIR / "run_history.jsonl"
+TEST_COMMAND = "make test"
 
 
 # ---------------------------------------------------------------------------
@@ -67,22 +68,33 @@ def builder(plan: dict) -> dict:
 
 def tester(build_result: dict) -> tuple[bool, list[str]]:
     steps = build_result["plan"]["steps"] + ["run tests"]
-    # Simulate a test run — replace with a real subprocess call in a future phase.
-    passed = random.choice([True, True, True, False])  # 75% pass rate
+    log("tester", f"running real test suite: {TEST_COMMAND!r}")
+
+    result = subprocess.run(
+        TEST_COMMAND,
+        shell=True,
+        capture_output=True,
+        text=True,
+        cwd=Path(__file__).parent.parent,
+    )
+
+    if result.stdout:
+        print(result.stdout.rstrip())
+    if result.stderr:
+        print(result.stderr.rstrip())
+
+    passed = result.returncode == 0
     if passed:
         log("tester", "tests passed")
     else:
-        log("tester", "tests FAILED")
+        log("tester", f"tests FAILED (exit code {result.returncode})")
+
     return passed, steps
 
 
 def fixer(steps_executed: list[str]) -> list[str]:
-    log("fixer", "analysing failure and applying fix")
-    steps_executed = steps_executed + ["apply fix"]
-    log("fixer", "fix applied — handing back to tester")
-    # Re-run tester after fix (simplified: assume fix succeeds).
-    log("tester", "tests passed after fix")
-    return steps_executed
+    log("fixer", "tests failed — a fix would be attempted here in a future phase")
+    return steps_executed + ["fix attempted"]
 
 
 def skill_curator(goal: str, passed: bool, steps_executed: list[str]) -> str:
@@ -92,6 +104,8 @@ def skill_curator(goal: str, passed: bool, steps_executed: list[str]) -> str:
         "goal": goal,
         "status": status,
         "steps_executed": steps_executed,
+        "test_command": TEST_COMMAND,
+        "test_passed": passed,
     }
     with RUN_HISTORY.open("a") as f:
         f.write(json.dumps(entry) + "\n")
