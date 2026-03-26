@@ -51,7 +51,28 @@ def orchestrator(goal: str) -> dict:
     return {"status": status, "steps_executed": steps_executed}
 
 
+def _load_run_history() -> list[dict]:
+    if not RUN_HISTORY.exists():
+        return []
+    entries = []
+    for line in RUN_HISTORY.read_text().splitlines():
+        line = line.strip()
+        if line:
+            try:
+                entries.append(json.loads(line))
+            except json.JSONDecodeError:
+                pass
+    return entries
+
+
 def planner(goal: str) -> dict:
+    history = _load_run_history()
+    prior_runs = [e for e in history if e.get("goal") == goal]
+    if prior_runs:
+        last_status = prior_runs[-1].get("status", "unknown")
+        log("planner", "previous run detected for goal")
+        log("planner", f"last status: {last_status}")
+
     keywords = goal.lower()
 
     if any(k in keywords for k in ("crud", "endpoint")):
