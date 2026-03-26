@@ -5,5 +5,13 @@ __pycache__/
 .vscode
 .idea
 .DS_Store
-memory/
-*.jsonl
+
+# Agent runtime memory
+memory/run_history.jsonl
+memory/*.log
+
+# keep template files tracked
+!memory/known_failures.json
+!memory/successful_patterns.json
+!memory/repo_conventions.md
+!memory/README.md
