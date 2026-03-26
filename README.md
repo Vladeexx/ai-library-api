@@ -53,24 +53,42 @@ Interactive docs at http://localhost:8000/docs
 
 | Command | Description |
 |---------|-------------|
-| `make dev` | Build and start the full stack (api, db, redis) |
+| `make dev` | Build and start the long-running services: api, db, redis |
 | `make db` | Start only db and redis |
-| `make migrate` | Run `alembic upgrade head` via a one-shot migrate container |
-| `make test` | Run pytest via a one-shot api container |
+| `make migrate` | One-shot: run `alembic upgrade head` via the migrate container |
+| `make test` | One-shot: run pytest via a temporary api container |
 | `make logs` | Tail API container logs |
 | `make down` | Stop all containers |
 
+`make dev` does not run migrations automatically — run `make migrate` first.
+
 ## Running with Docker
 
+**Recommended workflow:**
+
 ```bash
+# 1. Configure environment
 cp .env.example .env
-docker compose up --build
+
+# 2. Start db and redis
+make db
+
+# 3. Apply migrations (one-shot)
+make migrate
+
+# 4. Start the API
+make dev
+
+# 5. Run tests (one-shot, no running stack required)
+make test
+
+# 6. Stop everything
+make down
 ```
 
-Postgres and Redis health checks gate the API startup. Hot-reload is enabled via the mounted volume.
+Hot-reload is enabled via the mounted volume. To also remove the database volume on teardown:
 
 ```bash
-# Stop and remove volumes
 docker compose down -v
 ```
 

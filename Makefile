@@ -1,7 +1,7 @@
 .PHONY: dev db migrate test logs down
 
 dev:
-	docker compose up --build
+	docker compose up --build api db redis
 
 db:
 	docker compose up db redis
