@@ -170,7 +170,7 @@ def builder(plan: dict) -> dict:
 
 
 def tester(build_result: dict) -> tuple[bool, list[str]]:
-    steps = build_result["executed_steps"] + ["run tests"]
+    steps = build_result["executed_steps"]
     log("tester", f"running real test suite: {TEST_COMMAND!r}")
 
     result = subprocess.run(
