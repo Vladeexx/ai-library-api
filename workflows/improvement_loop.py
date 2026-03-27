@@ -40,6 +40,7 @@ RUN_HISTORY = MEMORY_DIR / "run_history.jsonl"
 KNOWN_FAILURES_FILE = MEMORY_DIR / "known_failures.json"
 SUCCESSFUL_PATTERNS_FILE = MEMORY_DIR / "successful_patterns.json"
 TEST_COMMAND = "make test"
+MAX_ATTEMPTS = 3
 
 
 # ---------------------------------------------------------------------------
@@ -59,9 +60,19 @@ def orchestrator(goal: str) -> RunState:
     state = RunState(goal=goal)
     state = planner(state)
     state = builder(state)
-    state = tester(state)
+
+    while state.attempt_number <= MAX_ATTEMPTS:
+        log("orchestrator", f"test attempt {state.attempt_number}/{MAX_ATTEMPTS}")
+        state = tester(state)
+        if state.test_passed:
+            break
+        if state.attempt_number < MAX_ATTEMPTS:
+            state = fixer(state)
+        state.attempt_number += 1
+
     if not state.test_passed:
-        state = fixer(state)
+        log("orchestrator", f"all {MAX_ATTEMPTS} attempts failed — recording as failed")
+
     state = skill_curator(state)
     log("orchestrator", f"run complete — status: {state.final_status}")
     return state
