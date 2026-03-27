@@ -288,6 +288,22 @@ def skill_curator(state: RunState) -> RunState:
     with RUN_HISTORY.open("a") as f:
         f.write(json.dumps(entry) + "\n")
     log("skill_curator", f"run recorded to memory/run_history.jsonl (status: {state.final_status})")
+
+    if state.final_status == "failed":
+        failure = {
+            "failure_type": "test_failure",
+            "goal": state.goal,
+            "plan_type": state.plan.get("plan_type"),
+            "skill_used": state.selected_skill,
+            "last_error": state.errors[-1] if state.errors else None,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+        existing = _load_json_file(KNOWN_FAILURES_FILE)
+        failures = existing if isinstance(existing, list) else []
+        failures.append(failure)
+        KNOWN_FAILURES_FILE.write_text(json.dumps(failures, indent=2))
+        log("skill_curator", "failure recorded to memory/known_failures.json")
+
     return state
 
 
