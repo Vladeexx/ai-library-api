@@ -309,7 +309,7 @@ def skill_curator(state: RunState) -> RunState:
 
     if state.final_status == "failed":
         failure = {
-            "failure_type": "test_failure",
+            "failure_type": state.failure_type or "unknown",
             "goal": state.goal,
             "plan_type": state.plan.get("plan_type"),
             "skill_used": state.selected_skill,
