@@ -16,7 +16,7 @@ import sys
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 # ---------------------------------------------------------------------------
 # Shared state
@@ -28,9 +28,12 @@ class RunState:
     attempt_number: int = 1
     plan: dict = field(default_factory=dict)
     selected_skill: Optional[str] = None
+    build_complete: bool = False
     executed_steps: list[str] = field(default_factory=list)
     test_passed: bool = False
     test_output: str = ""
+    # One entry is appended per failed tester run. decide_next_action depends
+    # on len(errors) == number of completed tester runs to route correctly.
     errors: list[str] = field(default_factory=list)
     final_status: Optional[str] = None
 
@@ -216,6 +219,7 @@ def builder(state: RunState) -> RunState:
     for i, step in enumerate(steps, start=1):
         log("builder", f"step {i}/{total}: {step}")
         state.executed_steps.append(step)
+    state.build_complete = True
     return state
 
 
@@ -247,6 +251,7 @@ def tester(state: RunState) -> RunState:
 def fixer(state: RunState) -> RunState:
     log("fixer", "tests failed — a fix would be attempted here in a future phase")
     state.executed_steps.append("fix attempted")
+    state.attempt_number += 1
     return state
 
 
@@ -294,7 +299,7 @@ def skill_curator(state: RunState) -> RunState:
 # runtime rather than being hardcoded in the control flow.
 # ---------------------------------------------------------------------------
 
-AGENT_REGISTRY: dict[str, callable] = {
+AGENT_REGISTRY: dict[str, Callable[[RunState], RunState]] = {
     "planner": planner,
     "builder": builder,
     "tester": tester,
@@ -303,25 +308,62 @@ AGENT_REGISTRY: dict[str, callable] = {
 }
 
 
+# ---------------------------------------------------------------------------
+# Decision function
+#
+# Separates "what should happen next?" from "execute it". The orchestrator
+# calls this on every iteration and dispatches whatever name is returned.
+#
+# This is the foundation for future adaptive behavior: fixer or skill_curator
+# can write a diagnosis or structured result back into RunState, and this
+# function can then route differently on the next iteration — without touching
+# the orchestrator or any other agent.
+# ---------------------------------------------------------------------------
+
+def decide_next_action(state: RunState) -> str:
+    if not state.plan:
+        return "planner"
+    if not state.build_complete:
+        return "builder"
+    if state.final_status is not None:
+        return "done"
+    if state.test_passed:
+        return "skill_curator"
+    # Invariant: len(state.errors) == number of completed tester runs.
+    # If errors < attempt_number, tester has not yet run this attempt.
+    if len(state.errors) < state.attempt_number:
+        return "tester"
+    # Tester ran and failed this attempt.
+    # Route to fixer if retries remain, otherwise close out.
+    if state.attempt_number < MAX_ATTEMPTS:
+        return "fixer"
+    return "skill_curator"
+
+
 def orchestrator(goal: str) -> RunState:
+    """
+    Pure dispatch loop. Contains no sequencing logic of its own.
+
+    On each iteration decide_next_action reads RunState and returns the name
+    of the next agent to run. The orchestrator dispatches it through
+    AGENT_REGISTRY and repeats. This loop is what makes future adaptive
+    behavior possible: once fixer writes a real diagnosis into RunState,
+    decide_next_action can route differently on the next pass — and
+    skill_curator can record richer outcomes — without changing anything here.
+    """
     log("orchestrator", f"received goal: {goal!r}")
     state = RunState(goal=goal)
-    state = AGENT_REGISTRY["planner"](state)
-    state = AGENT_REGISTRY["builder"](state)
 
-    while state.attempt_number <= MAX_ATTEMPTS:
-        log("orchestrator", f"test attempt {state.attempt_number}/{MAX_ATTEMPTS}")
-        state = AGENT_REGISTRY["tester"](state)
-        if state.test_passed:
+    while True:
+        action = decide_next_action(state)
+        if action == "done":
             break
-        if state.attempt_number < MAX_ATTEMPTS:
-            state = AGENT_REGISTRY["fixer"](state)
-        state.attempt_number += 1
+        if action == "tester":
+            log("orchestrator", f"test attempt {state.attempt_number}/{MAX_ATTEMPTS}")
+        if action == "skill_curator" and not state.test_passed:
+            log("orchestrator", f"all {MAX_ATTEMPTS} attempts exhausted — recording as failed")
+        state = AGENT_REGISTRY[action](state)
 
-    if not state.test_passed:
-        log("orchestrator", f"all {MAX_ATTEMPTS} attempts failed — recording as failed")
-
-    state = AGENT_REGISTRY["skill_curator"](state)
     log("orchestrator", f"run complete — status: {state.final_status}")
     return state
 
