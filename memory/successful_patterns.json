@@ -1,1 +1,5 @@
-{}
+{
+  "crud_endpoint_router_schema_tests": {
+    "description": "For endpoint work, inspect routers and schemas together and always add tests."
+  }
+}
