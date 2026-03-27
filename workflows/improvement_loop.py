@@ -55,28 +55,6 @@ def log(agent: str, message: str) -> None:
 # Agents
 # ---------------------------------------------------------------------------
 
-def orchestrator(goal: str) -> RunState:
-    log("orchestrator", f"received goal: {goal!r}")
-    state = RunState(goal=goal)
-    state = planner(state)
-    state = builder(state)
-
-    while state.attempt_number <= MAX_ATTEMPTS:
-        log("orchestrator", f"test attempt {state.attempt_number}/{MAX_ATTEMPTS}")
-        state = tester(state)
-        if state.test_passed:
-            break
-        if state.attempt_number < MAX_ATTEMPTS:
-            state = fixer(state)
-        state.attempt_number += 1
-
-    if not state.test_passed:
-        log("orchestrator", f"all {MAX_ATTEMPTS} attempts failed — recording as failed")
-
-    state = skill_curator(state)
-    log("orchestrator", f"run complete — status: {state.final_status}")
-    return state
-
 
 def _load_json_file(path: Path) -> dict:
     """Load a JSON file, returning an empty dict on any error."""
@@ -304,6 +282,47 @@ def skill_curator(state: RunState) -> RunState:
         KNOWN_FAILURES_FILE.write_text(json.dumps(failures, indent=2))
         log("skill_curator", "failure recorded to memory/known_failures.json")
 
+    return state
+
+
+# ---------------------------------------------------------------------------
+# Agent registry
+#
+# Maps agent names to their handler functions.  The orchestrator uses this
+# table instead of calling functions directly, which is the groundwork for
+# later decision-based orchestration where the next agent is chosen at
+# runtime rather than being hardcoded in the control flow.
+# ---------------------------------------------------------------------------
+
+AGENT_REGISTRY: dict[str, callable] = {
+    "planner": planner,
+    "builder": builder,
+    "tester": tester,
+    "fixer": fixer,
+    "skill_curator": skill_curator,
+}
+
+
+def orchestrator(goal: str) -> RunState:
+    log("orchestrator", f"received goal: {goal!r}")
+    state = RunState(goal=goal)
+    state = AGENT_REGISTRY["planner"](state)
+    state = AGENT_REGISTRY["builder"](state)
+
+    while state.attempt_number <= MAX_ATTEMPTS:
+        log("orchestrator", f"test attempt {state.attempt_number}/{MAX_ATTEMPTS}")
+        state = AGENT_REGISTRY["tester"](state)
+        if state.test_passed:
+            break
+        if state.attempt_number < MAX_ATTEMPTS:
+            state = AGENT_REGISTRY["fixer"](state)
+        state.attempt_number += 1
+
+    if not state.test_passed:
+        log("orchestrator", f"all {MAX_ATTEMPTS} attempts failed — recording as failed")
+
+    state = AGENT_REGISTRY["skill_curator"](state)
+    log("orchestrator", f"run complete — status: {state.final_status}")
     return state
 
 
