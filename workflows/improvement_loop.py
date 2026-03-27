@@ -35,6 +35,7 @@ class RunState:
     # One entry is appended per failed tester run. decide_next_action depends
     # on len(errors) == number of completed tester runs to route correctly.
     errors: list[str] = field(default_factory=list)
+    fixer_notes: str = ""
     final_status: Optional[str] = None
 
 
@@ -250,6 +251,9 @@ def tester(state: RunState) -> RunState:
 
 def fixer(state: RunState) -> RunState:
     log("fixer", "tests failed — a fix would be attempted here in a future phase")
+    last_error = state.errors[-1] if state.errors else "unknown error"
+    state.fixer_notes = f"attempt {state.attempt_number} failed: {last_error}"
+    log("fixer", f"noted: {state.fixer_notes}")
     state.executed_steps.append("fix attempted")
     state.attempt_number += 1
     return state
@@ -267,6 +271,7 @@ def skill_curator(state: RunState) -> RunState:
         "steps_executed": state.executed_steps,
         "test_command": TEST_COMMAND,
         "test_passed": state.test_passed,
+        "fixer_notes": state.fixer_notes or None,
     }
     with RUN_HISTORY.open("a") as f:
         f.write(json.dumps(entry) + "\n")
