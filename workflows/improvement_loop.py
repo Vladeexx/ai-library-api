@@ -243,9 +243,12 @@ def tester(state: RunState) -> RunState:
     state.test_passed = result.returncode == 0
     if state.test_passed:
         log("tester", "tests passed")
+        state.failure_type = ""
     else:
         log("tester", f"tests FAILED (exit code {result.returncode})")
         state.errors.append(f"tests failed with exit code {result.returncode}")
+        state.failure_type = _classify_failure(state.test_output)
+        log("tester", f"classified failure as: {state.failure_type}")
 
     return state
 
@@ -264,11 +267,20 @@ def _classify_failure(test_output: str) -> str:
 def fixer(state: RunState) -> RunState:
     log("fixer", "tests failed — a fix would be attempted here in a future phase")
     last_error = state.errors[-1] if state.errors else "unknown error"
-    state.failure_type = _classify_failure(state.test_output)
     state.fixer_notes = f"attempt {state.attempt_number} failed: {last_error}"
-    log("fixer", f"classified failure as: {state.failure_type}")
     log("fixer", f"noted: {state.fixer_notes}")
     state.executed_steps.append("fix attempted")
+    state.attempt_number += 1
+    return state
+
+
+def import_fixer(state: RunState) -> RunState:
+    log("import_fixer", "import error detected — an import-specific fix would be attempted here")
+    state.fixer_notes = (
+        f"attempt {state.attempt_number}: import_fixer invoked for import_error"
+    )
+    log("import_fixer", state.fixer_notes)
+    state.executed_steps.append("import fix attempted")
     state.attempt_number += 1
     return state
 
@@ -324,6 +336,7 @@ AGENT_REGISTRY: dict[str, Callable[[RunState], RunState]] = {
     "builder": builder,
     "tester": tester,
     "fixer": fixer,
+    "import_fixer": import_fixer,
     "skill_curator": skill_curator,
 }
 
@@ -354,8 +367,10 @@ def decide_next_action(state: RunState) -> str:
     if len(state.errors) < state.attempt_number:
         return "tester"
     # Tester ran and failed this attempt.
-    # Route to fixer if retries remain, otherwise close out.
+    # Route to a specialised fixer if retries remain, otherwise close out.
     if state.attempt_number < MAX_ATTEMPTS:
+        if state.failure_type == "import_error":
+            return "import_fixer"
         return "fixer"
     return "skill_curator"
 
