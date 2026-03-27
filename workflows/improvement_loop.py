@@ -276,6 +276,9 @@ def fixer(state: RunState) -> RunState:
 
 def import_fixer(state: RunState) -> RunState:
     log("import_fixer", "import error detected — an import-specific fix would be attempted here")
+    # failure_type is intentionally not modified here: tester already classified
+    # this run as "import_error" and that classification should be preserved
+    # for skill_curator and run history.
     state.fixer_notes = (
         f"attempt {state.attempt_number}: import_fixer invoked for import_error"
     )
