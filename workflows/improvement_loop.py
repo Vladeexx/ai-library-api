@@ -13,9 +13,27 @@ Usage:
 import json
 import subprocess
 import sys
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
+
+# ---------------------------------------------------------------------------
+# Shared state
+# ---------------------------------------------------------------------------
+
+@dataclass
+class RunState:
+    goal: str
+    attempt_number: int = 1
+    plan: dict = field(default_factory=dict)
+    selected_skill: Optional[str] = None
+    executed_steps: list[str] = field(default_factory=list)
+    test_passed: bool = False
+    test_output: str = ""
+    errors: list[str] = field(default_factory=list)
+    final_status: Optional[str] = None
+
 
 MEMORY_DIR = Path(__file__).parent.parent / "memory"
 RUN_HISTORY = MEMORY_DIR / "run_history.jsonl"
@@ -36,23 +54,17 @@ def log(agent: str, message: str) -> None:
 # Agents
 # ---------------------------------------------------------------------------
 
-def orchestrator(goal: str) -> dict:
+def orchestrator(goal: str) -> RunState:
     log("orchestrator", f"received goal: {goal!r}")
-    plan = planner(goal)
-    build_result = builder(plan)
-    passed, steps_executed = tester(build_result)
-    if not passed:
-        steps_executed = fixer(steps_executed)
-    status = skill_curator(
-        goal=goal,
-        passed=passed,
-        steps_executed=steps_executed,
-        plan_type=plan["plan_type"],
-        builder_status=build_result["builder_status"],
-        skill_used=build_result["skill_used"],
-    )
-    log("orchestrator", f"run complete — status: {status}")
-    return {"status": status, "steps_executed": steps_executed}
+    state = RunState(goal=goal)
+    state = planner(state)
+    state = builder(state)
+    state = tester(state)
+    if not state.test_passed:
+        state = fixer(state)
+    state = skill_curator(state)
+    log("orchestrator", f"run complete — status: {state.final_status}")
+    return state
 
 
 def _load_json_file(path: Path) -> dict:
@@ -110,9 +122,9 @@ def _load_run_history() -> list[dict]:
     return entries
 
 
-def planner(goal: str) -> dict:
+def planner(state: RunState) -> RunState:
     history = _load_run_history()
-    prior_runs = [e for e in history if e.get("goal") == goal]
+    prior_runs = [e for e in history if e.get("goal") == state.goal]
     last_failed = False
     preferred_skill = None
     if prior_runs:
@@ -128,7 +140,7 @@ def planner(goal: str) -> dict:
             preferred_skill = successful[-1]["skill_used"]
             log("planner", f"previous successful skill detected: {preferred_skill}")
 
-    keywords = goal.lower()
+    keywords = state.goal.lower()
 
     if any(k in keywords for k in ("crud", "endpoint")):
         plan_type = "crud_endpoint"
@@ -163,9 +175,8 @@ def planner(goal: str) -> dict:
         steps.insert(1, "review previous failure")
         log("planner", "adapting plan based on previous failure")
 
-    relevant_patterns = _find_relevant_patterns(goal, plan_type)
-    plan = {
-        "goal": goal,
+    relevant_patterns = _find_relevant_patterns(state.goal, plan_type)
+    state.plan = {
         "plan_type": plan_type,
         "preferred_skill": preferred_skill,
         "steps": steps,
@@ -176,7 +187,7 @@ def planner(goal: str) -> dict:
         f"selected plan_type={plan_type!r} with {len(steps)} steps"
         f" and {len(relevant_patterns)} relevant patterns",
     )
-    return plan
+    return state
 
 
 SKILL_MAP = {
@@ -188,14 +199,15 @@ SKILL_MAP = {
 SKILLS_DIR = Path(__file__).parent.parent / ".claude" / "skills" / "coding"
 
 
-def builder(plan: dict) -> dict:
+def builder(state: RunState) -> RunState:
     log("builder", "starting execution")
 
-    if plan.get("preferred_skill"):
-        skill = plan["preferred_skill"]
+    preferred_skill = state.plan.get("preferred_skill")
+    if preferred_skill:
+        skill = preferred_skill
         log("builder", f"reusing preferred skill from memory: {skill}")
     else:
-        skill = SKILL_MAP.get(plan["plan_type"])
+        skill = SKILL_MAP.get(state.plan.get("plan_type", "generic"))
         if skill:
             log("builder", f"using default skill: {skill}")
         else:
@@ -209,22 +221,16 @@ def builder(plan: dict) -> dict:
         else:
             log("builder", "skill definition file not found")
 
-    steps = plan["steps"]
+    state.selected_skill = skill
+    steps = state.plan.get("steps", [])
     total = len(steps)
-    executed_steps = []
     for i, step in enumerate(steps, start=1):
         log("builder", f"step {i}/{total}: {step}")
-        executed_steps.append(step)
-    return {
-        "plan": plan,
-        "executed_steps": executed_steps,
-        "builder_status": "completed",
-        "skill_used": skill,
-    }
+        state.executed_steps.append(step)
+    return state
 
 
-def tester(build_result: dict) -> tuple[bool, list[str]]:
-    steps = build_result["executed_steps"]
+def tester(state: RunState) -> RunState:
     log("tester", f"running real test suite: {TEST_COMMAND!r}")
 
     result = subprocess.run(
@@ -235,49 +241,43 @@ def tester(build_result: dict) -> tuple[bool, list[str]]:
         cwd=Path(__file__).parent.parent,
     )
 
-    if result.stdout:
-        print(result.stdout.rstrip())
-    if result.stderr:
-        print(result.stderr.rstrip())
+    state.test_output = "\n".join(filter(None, [result.stdout.rstrip(), result.stderr.rstrip()]))
+    if state.test_output:
+        print(state.test_output)
 
-    passed = result.returncode == 0
-    if passed:
+    state.test_passed = result.returncode == 0
+    if state.test_passed:
         log("tester", "tests passed")
     else:
         log("tester", f"tests FAILED (exit code {result.returncode})")
+        state.errors.append(f"tests failed with exit code {result.returncode}")
 
-    return passed, steps
+    return state
 
 
-def fixer(steps_executed: list[str]) -> list[str]:
+def fixer(state: RunState) -> RunState:
     log("fixer", "tests failed — a fix would be attempted here in a future phase")
-    return steps_executed + ["fix attempted"]
+    state.executed_steps.append("fix attempted")
+    return state
 
 
-def skill_curator(
-    goal: str,
-    passed: bool,
-    steps_executed: list[str],
-    plan_type: str,
-    builder_status: str,
-    skill_used: Optional[str],
-) -> str:
-    status = "success" if passed else "failed"
+def skill_curator(state: RunState) -> RunState:
+    state.final_status = "success" if state.test_passed else "failed"
     entry = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
-        "goal": goal,
-        "plan_type": plan_type,
-        "builder_status": builder_status,
-        "skill_used": skill_used,
-        "status": status,
-        "steps_executed": steps_executed,
+        "goal": state.goal,
+        "plan_type": state.plan.get("plan_type"),
+        "builder_status": "completed",
+        "skill_used": state.selected_skill,
+        "status": state.final_status,
+        "steps_executed": state.executed_steps,
         "test_command": TEST_COMMAND,
-        "test_passed": passed,
+        "test_passed": state.test_passed,
     }
     with RUN_HISTORY.open("a") as f:
         f.write(json.dumps(entry) + "\n")
-    log("skill_curator", f"run recorded to memory/run_history.jsonl (status: {status})")
-    return status
+    log("skill_curator", f"run recorded to memory/run_history.jsonl (status: {state.final_status})")
+    return state
 
 
 # ---------------------------------------------------------------------------
@@ -290,4 +290,5 @@ if __name__ == "__main__":
         sys.exit(1)
 
     goal = sys.argv[1]
-    orchestrator(goal)
+    final_state = orchestrator(goal)
+    sys.exit(0 if final_state.final_status == "success" else 1)
