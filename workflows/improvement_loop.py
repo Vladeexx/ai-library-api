@@ -275,15 +275,34 @@ def fixer(state: RunState) -> RunState:
 
 
 def import_fixer(state: RunState) -> RunState:
-    log("import_fixer", "import error detected — an import-specific fix would be attempted here")
+    log("import_fixer", "import error detected — analysing failure history")
     # failure_type is intentionally not modified here: tester already classified
     # this run as "import_error" and that classification should be preserved
     # for skill_curator and run history.
-    state.fixer_notes = (
-        f"attempt {state.attempt_number}: import_fixer invoked for import_error"
-    )
+
+    known = _load_json_file(KNOWN_FAILURES_FILE)
+    prior_import_errors = [
+        e for e in (known if isinstance(known, list) else [])
+        if e.get("failure_type") == "import_error" and e.get("goal") == state.goal
+    ]
+
+    if prior_import_errors:
+        last = prior_import_errors[-1]
+        last_error = last.get("last_error", "unknown")
+        diagnosis = (
+            f"repeated import error detected ({len(prior_import_errors)} prior occurrence(s)); "
+            f"possible missing module import or incorrect package path; "
+            f"last recorded error: {last_error}"
+        )
+    else:
+        diagnosis = (
+            "first observed import error for this goal; "
+            "possible missing module import or incorrect package path"
+        )
+
+    state.fixer_notes = f"attempt {state.attempt_number}: {diagnosis}"
     log("import_fixer", state.fixer_notes)
-    state.executed_steps.append("import fix attempted")
+    state.executed_steps.append("import_fixer analyzed previous import failures")
     state.attempt_number += 1
     return state
 
