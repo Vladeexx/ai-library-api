@@ -42,7 +42,8 @@ class RunState:
     final_status: Optional[str] = None
 
 
-MEMORY_DIR = Path(__file__).parent.parent / "memory"
+REPO_ROOT = Path(__file__).parent.parent
+MEMORY_DIR = REPO_ROOT / "memory"
 RUN_HISTORY = MEMORY_DIR / "run_history.jsonl"
 KNOWN_FAILURES_FILE = MEMORY_DIR / "known_failures.json"
 SUCCESSFUL_PATTERNS_FILE = MEMORY_DIR / "successful_patterns.json"
@@ -276,6 +277,32 @@ def fixer(state: RunState) -> RunState:
     return state
 
 
+def _inspect_files(relative_paths: list[str], target: Optional[str]) -> list[str]:
+    """
+    For each path in relative_paths, check whether the file exists and whether
+    target appears in its contents. Returns one short finding string per file.
+    """
+    findings = []
+    for rel_path in relative_paths:
+        full_path = REPO_ROOT / rel_path
+        if not full_path.exists():
+            findings.append(f"{rel_path}: file not found")
+            continue
+        if not target:
+            findings.append(f"{rel_path}: file exists")
+            continue
+        try:
+            content = full_path.read_text()
+        except OSError:
+            findings.append(f"{rel_path}: could not read")
+            continue
+        if target in content:
+            findings.append(f"{rel_path}: '{target}' found")
+        else:
+            findings.append(f"{rel_path}: '{target}' not found")
+    return findings
+
+
 # Files known to require manual import registration in this codebase.
 # Derived from memory/repo_conventions.md and .claude/skills/coding/fix_import_error.md.
 _IMPORT_ERROR_FILES = [
@@ -353,6 +380,11 @@ def import_fixer(state: RunState) -> RunState:
             ),
             "confidence": confidence,
         }
+
+    findings = _inspect_files(state.suggested_fix["likely_files_to_inspect"], missing_target)
+    state.suggested_fix["inspection_findings"] = findings
+    for finding in findings:
+        log("import_fixer", f"inspected: {finding}")
 
     state.fixer_notes = f"attempt {state.attempt_number}: {diagnosis}"
     log("import_fixer", state.fixer_notes)
