@@ -303,6 +303,110 @@ def _inspect_files(relative_paths: list[str], target: Optional[str]) -> list[str
     return findings
 
 
+def _build_patch_proposal(
+    missing_target: Optional[str],
+    is_internal: bool,
+    findings: list[str],
+) -> Optional[dict]:
+    """
+    Parse inspection_findings and return one concrete patch proposal, or None
+    if no specific proposal can be made.
+
+    Finding strings have the format  "<rel_path>: <message>"  where message is
+    one of:  "'X' found" | "'X' not found" | "file not found" | "file exists"
+    """
+    if not missing_target:
+        return None
+
+    # Build a lookup so we can query findings by file path.
+    finding_map: dict[str, str] = {}
+    for f in findings:
+        if ": " in f:
+            path, msg = f.split(": ", 1)
+            finding_map[path] = msg
+
+    if is_internal:
+        # Derive the import line the registration files should contain.
+        # Convention: modules live at app.models.<name_lower> (e.g. app.models.author).
+        if "." in missing_target:
+            import_line = f"import {missing_target}  # noqa: F401"
+        else:
+            import_line = f"import app.models.{missing_target.lower()}  # noqa: F401"
+
+        # Priority: check registration files in order; propose the first one missing the target.
+        for reg_file in ("alembic/env.py", "tests/conftest.py"):
+            msg = finding_map.get(reg_file, "")
+            if msg == "file not found":
+                continue  # unusual — skip; don't propose adding to a missing file
+            if "not found" in msg:  # "'X' not found" — file exists but target absent
+                return {
+                    "target_file": reg_file,
+                    "action": "add_import",
+                    "proposed_change": import_line,
+                    "reason": (
+                        f"'{missing_target}' is not imported in {reg_file}; "
+                        "required for model registration"
+                    ),
+                    "confidence": "high",
+                }
+
+        # If the model __init__ is entirely absent, the model file itself may not exist.
+        if finding_map.get("app/models/__init__.py") == "file not found":
+            return {
+                "target_file": f"app/models/{missing_target.lower()}.py",
+                "action": "verify_model_file",
+                "proposed_change": (
+                    f"verify that app/models/{missing_target.lower()}.py exists "
+                    f"and defines '{missing_target}'"
+                ),
+                "reason": (
+                    "app/models/__init__.py not found; "
+                    "the model file itself may not have been created yet"
+                ),
+                "confidence": "medium",
+            }
+
+        return None  # target already present in all checked files — no proposal needed
+
+    else:
+        # External package case — inspect requirements.txt finding.
+        msg = finding_map.get("requirements.txt", "")
+        if msg == "file not found":
+            return {
+                "target_file": "requirements.txt",
+                "action": "create_and_add_dependency",
+                "proposed_change": (
+                    f"create requirements.txt and add '{missing_target}'"
+                ),
+                "reason": "requirements.txt does not exist",
+                "confidence": "low",
+            }
+        if "not found" in msg:
+            return {
+                "target_file": "requirements.txt",
+                "action": "add_dependency",
+                "proposed_change": f"add '{missing_target}' to requirements.txt",
+                "reason": f"'{missing_target}' is not listed in requirements.txt",
+                "confidence": "high",
+            }
+        if "found" in msg and "not found" not in msg:
+            return {
+                "target_file": None,
+                "action": "check_install",
+                "proposed_change": (
+                    "run 'pip install -r requirements.txt' "
+                    "or rebuild the Docker container"
+                ),
+                "reason": (
+                    f"'{missing_target}' is listed in requirements.txt "
+                    "but may not be installed in the current environment"
+                ),
+                "confidence": "medium",
+            }
+
+        return None
+
+
 # Files known to require manual import registration in this codebase.
 # Derived from memory/repo_conventions.md and .claude/skills/coding/fix_import_error.md.
 _IMPORT_ERROR_FILES = [
@@ -385,6 +489,11 @@ def import_fixer(state: RunState) -> RunState:
     state.suggested_fix["inspection_findings"] = findings
     for finding in findings:
         log("import_fixer", f"inspected: {finding}")
+
+    patch_proposal = _build_patch_proposal(missing_target, is_internal, findings)
+    state.suggested_fix["patch_proposal"] = patch_proposal
+    if patch_proposal:
+        log("import_fixer", f"patch proposal: {patch_proposal['action']} → {patch_proposal.get('target_file', 'n/a')}")
 
     state.fixer_notes = f"attempt {state.attempt_number}: {diagnosis}"
     log("import_fixer", state.fixer_notes)
