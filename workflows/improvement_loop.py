@@ -39,6 +39,8 @@ class RunState:
     fixer_notes: str = ""
     failure_type: str = ""
     suggested_fix: dict = field(default_factory=dict)
+    repair_applied: bool = False
+    repair_summary: str = ""
     final_status: Optional[str] = None
 
 
@@ -407,6 +409,89 @@ def _build_patch_proposal(
         return None
 
 
+# Files that _apply_patch_proposal is permitted to modify automatically.
+# Deliberately narrow: only well-understood registration files.
+_PATCH_ALLOWLIST = {"alembic/env.py", "tests/conftest.py"}
+
+
+def _apply_patch_proposal(proposal: dict, state: "RunState") -> "RunState":
+    """
+    Apply a high-confidence add_import patch proposal to a single file.
+
+    Safety gates (all must pass; any failure sets repair_summary and returns):
+    - action must be "add_import"
+    - target_file must be in _PATCH_ALLOWLIST
+    - confidence must be "high"
+    - proposed_change must be a non-empty single line starting with "import " or "from "
+    - target file must already exist (never creates files)
+    - proposed_change must not already be present in the file (idempotency)
+    """
+    action = proposal.get("action")
+    target_file = proposal.get("target_file")
+    confidence = proposal.get("confidence")
+    proposed_change = (proposal.get("proposed_change") or "").strip()
+
+    # Gate 1: action and allowlist
+    if action != "add_import":
+        state.repair_summary = f"repair skipped: action '{action}' is not auto-applicable"
+        return state
+    if target_file not in _PATCH_ALLOWLIST:
+        state.repair_summary = f"repair skipped: '{target_file}' is not in the safe allowlist"
+        return state
+
+    # Gate 2: confidence
+    if confidence != "high":
+        state.repair_summary = f"repair skipped: confidence '{confidence}' is below threshold"
+        return state
+
+    # Gate 3: proposed_change is a valid single import line
+    if not proposed_change:
+        state.repair_summary = "repair skipped: proposed_change is empty"
+        return state
+    if "\n" in proposed_change:
+        state.repair_summary = "repair skipped: proposed_change spans multiple lines"
+        return state
+    if not (proposed_change.startswith("import ") or proposed_change.startswith("from ")):
+        state.repair_summary = (
+            "repair skipped: proposed_change does not start with 'import ' or 'from '"
+        )
+        return state
+
+    # Gate 4: file must exist
+    full_path = REPO_ROOT / target_file
+    if not full_path.exists():
+        state.repair_summary = f"repair skipped: target file '{target_file}' does not exist"
+        return state
+
+    # Gate 5: idempotency — do not append if the line is already present
+    try:
+        existing = full_path.read_text()
+    except OSError:
+        state.repair_summary = f"repair skipped: could not read '{target_file}'"
+        return state
+
+    if proposed_change in existing:
+        state.repair_summary = (
+            f"repair skipped: '{proposed_change}' already present in {target_file}"
+        )
+        return state
+
+    # All gates passed — append the import line.
+    try:
+        with full_path.open("a") as fh:
+            # Ensure we start on a new line even if the file does not end with one.
+            if existing and not existing.endswith("\n"):
+                fh.write("\n")
+            fh.write(proposed_change + "\n")
+    except OSError as exc:
+        state.repair_summary = f"repair failed: could not write to '{target_file}': {exc}"
+        return state
+
+    state.repair_applied = True
+    state.repair_summary = f"appended '{proposed_change}' to {target_file}"
+    return state
+
+
 # Files known to require manual import registration in this codebase.
 # Derived from memory/repo_conventions.md and .claude/skills/coding/fix_import_error.md.
 _IMPORT_ERROR_FILES = [
@@ -494,6 +579,8 @@ def import_fixer(state: RunState) -> RunState:
     state.suggested_fix["patch_proposal"] = patch_proposal
     if patch_proposal:
         log("import_fixer", f"patch proposal: {patch_proposal['action']} → {patch_proposal.get('target_file', 'n/a')}")
+        state = _apply_patch_proposal(patch_proposal, state)
+        log("import_fixer", f"repair: {state.repair_summary}")
 
     state.fixer_notes = f"attempt {state.attempt_number}: {diagnosis}"
     log("import_fixer", state.fixer_notes)
@@ -518,6 +605,8 @@ def skill_curator(state: RunState) -> RunState:
         "fixer_notes": state.fixer_notes or None,
         "failure_type": state.failure_type or None,
         "suggested_fix": state.suggested_fix or None,
+        "repair_applied": state.repair_applied or None,
+        "repair_summary": state.repair_summary or None,
     }
     with RUN_HISTORY.open("a") as f:
         f.write(json.dumps(entry) + "\n")
