@@ -11,6 +11,7 @@ Usage:
 """
 
 import json
+import re
 import subprocess
 import sys
 from dataclasses import dataclass, field
@@ -37,6 +38,7 @@ class RunState:
     errors: list[str] = field(default_factory=list)
     fixer_notes: str = ""
     failure_type: str = ""
+    suggested_fix: dict = field(default_factory=dict)
     final_status: Optional[str] = None
 
 
@@ -274,6 +276,15 @@ def fixer(state: RunState) -> RunState:
     return state
 
 
+# Files known to require manual import registration in this codebase.
+# Derived from memory/repo_conventions.md and .claude/skills/coding/fix_import_error.md.
+_IMPORT_ERROR_FILES = [
+    "alembic/env.py",
+    "tests/conftest.py",
+    "app/models/__init__.py",
+]
+
+
 def import_fixer(state: RunState) -> RunState:
     log("import_fixer", "import error detected — analysing failure history")
     # failure_type is intentionally not modified here: tester already classified
@@ -294,14 +305,58 @@ def import_fixer(state: RunState) -> RunState:
             f"possible missing module import or incorrect package path; "
             f"last recorded error: {last_error}"
         )
+        confidence = "high"
     else:
         diagnosis = (
             "first observed import error for this goal; "
             "possible missing module import or incorrect package path"
         )
+        confidence = "medium"
+
+    # Extract missing import target from the actual tester output.
+    # Matches two pytest error patterns:
+    #   "cannot import name 'Author'"          → group 1 (a name import — always internal)
+    #   "No module named 'app.models.author'"  → group 2 (a module import — check prefix)
+    match = re.search(
+        r"cannot import name ['\"](\w+)['\"]|No module named ['\"]([.\w]+)['\"]",
+        state.test_output,
+    )
+    if match:
+        missing_target = match.group(1) or match.group(2)
+        # group(1) → "cannot import name" pattern: the named thing lives inside a module
+        # that already exists. In this codebase that almost always means a model or schema
+        # that isn't exported yet → treat as internal.
+        # group(2) → "No module named" pattern: internal only if the path starts with "app."
+        is_internal = bool(match.group(1)) or (match.group(2) or "").startswith("app.")
+    else:
+        missing_target = None
+        is_internal = True  # no match: conservative fallback to internal advice
+
+    if is_internal:
+        state.suggested_fix = {
+            "likely_cause": "missing or incorrect module import",
+            "missing_target": missing_target,
+            "likely_files_to_inspect": _IMPORT_ERROR_FILES,
+            "suggested_fix": (
+                "ensure new models are imported in alembic/env.py and tests/conftest.py; "
+                "check for missing __init__.py in new package directories"
+            ),
+            "confidence": confidence,
+        }
+    else:
+        state.suggested_fix = {
+            "likely_cause": "missing external package or unresolvable module",
+            "missing_target": missing_target,
+            "likely_files_to_inspect": ["requirements.txt"],
+            "suggested_fix": (
+                f"check that '{missing_target}' is listed in requirements.txt and installed"
+            ),
+            "confidence": confidence,
+        }
 
     state.fixer_notes = f"attempt {state.attempt_number}: {diagnosis}"
     log("import_fixer", state.fixer_notes)
+    log("import_fixer", f"suggested_fix produced (confidence: {confidence}, target: {missing_target or 'unknown'})")
     state.executed_steps.append("import_fixer analyzed previous import failures")
     state.attempt_number += 1
     return state
@@ -321,6 +376,7 @@ def skill_curator(state: RunState) -> RunState:
         "test_passed": state.test_passed,
         "fixer_notes": state.fixer_notes or None,
         "failure_type": state.failure_type or None,
+        "suggested_fix": state.suggested_fix or None,
     }
     with RUN_HISTORY.open("a") as f:
         f.write(json.dumps(entry) + "\n")
@@ -333,6 +389,7 @@ def skill_curator(state: RunState) -> RunState:
             "plan_type": state.plan.get("plan_type"),
             "skill_used": state.selected_skill,
             "last_error": state.errors[-1] if state.errors else None,
+            "suggested_fix": state.suggested_fix or None,
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
         existing = _load_json_file(KNOWN_FAILURES_FILE)
