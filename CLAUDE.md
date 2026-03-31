@@ -132,15 +132,15 @@ The orchestrator determines the next step dynamically.
 
 A shared state object that contains:
 
-* goal
-* plan type
-* executed steps
-* failure type
-* fixer notes
-* attempt count
-* completion flags
+* goal, plan, plan_version
+* selected_skill, skills_applied, skill_notes, pattern_hint
+* executed_steps, build_complete
+* test_passed, test_output, failure_type, errors
+* fixer_notes, suggested_fix, repair_applied, repair_summary
+* replanned, last_failure_summary
+* final_status
 
-All agents read and update this object.
+All agents read and update this object. `plan_version` increments on every planner call (1 = initial, 2+ = replan). `replanned` gates post-failure replanning to once per run.
 
 ---
 
@@ -209,24 +209,29 @@ Stores patterns that led to successful outcomes.
 
 # Skills System
 
-Reusable skills are stored in the `skills/` directory.
+Reusable skills live in `.claude/skills/coding/` and `.claude/skills/operational/`.
 
-Skills represent **reusable development capabilities**, such as:
+Each skill file uses this structured format:
 
-* fixing import errors
-* adding endpoints
-* adding tests
-* following repo conventions
+```
+## Purpose     — one-line description (prose, not parsed)
+## Trigger     — bullet list of match conditions (parsed by planner)
+## Steps       — bullet list of ordered actions (consumed by builder)
+## Conventions — bullet list of repo rules (stored in skill_notes)
+## Constraints — bullet list of things to avoid (stored in skill_notes)
+```
 
-Skill files should include:
+**Trigger bullets** use two parseable forms:
+- `Goal contains "X"` — scores 1 if any quoted keyword appears in the goal
+- `failure_type == "X"` — scores 2 if failure_type matches exactly
 
-purpose
-trigger conditions
-steps to perform
-constraints
-expected outcome
+Planner selects skills using a four-level priority chain:
+1. Exact goal match in `run_history.jsonl`
+2. Plan-type match in `successful_patterns.json`
+3. Trigger-based match across all skill files (highest score wins)
+4. Hardcoded `SKILL_MAP` fallback in builder
 
-Agents may consult skills to guide decisions.
+Builder reads `## Steps`, `## Conventions`, and `## Constraints` from the selected skill file and appends them to `executed_steps` and `skill_notes`.
 
 ---
 
@@ -276,16 +281,56 @@ When implementing improvements:
 
 ---
 
+# Current Implementation Status
+
+The following is **fully implemented** in `workflows/improvement_loop.py`:
+
+* State-driven dispatch loop (`orchestrator` + `decide_next_action`)
+* Four-priority skill selection in `planner`
+* Trigger-based skill matching with weighted scoring
+* Builder consuming `## Steps`, `## Conventions`, `## Constraints` from skill files
+* Prior successful `skill_notes` reuse across runs
+* Import error fixer with structured patch proposals and safety-gated auto-repair
+* Post-failure replanning (`plan_version`, `replanned`, `last_failure_summary`)
+* `successful_patterns.json` written on success and consulted on next run
+* `known_failures.json` written on failure
+* `run_history.jsonl` append-only run log
+
+The following remains **stubbed or limited**:
+
+* `builder` logs and records steps but does not write files — changes must still be made by Claude Code directly
+* `fixer` is a placeholder for non-import failures — only `import_fixer` is fully implemented
+* Operational skills (`run_tests.md`, `run_migrations.md`, `inspect_api_logs.md`) are documentation only
+
+---
+
+# How to Run the Improvement Loop
+
+```bash
+python workflows/improvement_loop.py "add books CRUD endpoint"
+python workflows/improvement_loop.py "add migration for authors table"
+python workflows/improvement_loop.py "add tests for the reviews endpoint"
+```
+
+The loop will plan, build (record steps), run `make test`, classify failures, replan if needed, and record memory. Exit code 0 = success, 1 = failed after all attempts.
+
+To inspect memory after a run:
+```bash
+tail -1 memory/run_history.jsonl | python3 -m json.tool
+cat memory/successful_patterns.json
+cat memory/known_failures.json
+```
+
+---
+
 # Long-Term Direction
 
-Future improvements should focus on:
+The system is a credible minimal agent workflow. Next meaningful improvements:
 
-* making fixers produce actionable repairs
-* making builder consume skill content
-* improving memory reuse
-* demonstrating adaptive behavior
-
-The system should become a **credible minimal agent workflow**, not a theoretical design.
+* Connect builder to real file writes (currently logs steps only)
+* Implement a real `fixer` for `test_failure` type (beyond the skill hint)
+* Add skill_curator pattern curation — propose new skills from repeated successful runs
+* Expand trigger vocabulary to support `plan_type ==` matching
 
 ---
 

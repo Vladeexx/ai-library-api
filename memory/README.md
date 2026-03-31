@@ -11,6 +11,8 @@ This directory stores persistent context for the agent improvement loop.
 | `successful_patterns.json` | Map of approaches that have worked reliably in this codebase |
 | `repo_conventions.md` | Human-readable summary of project conventions the Builder must follow |
 
-## Status
+## Written by
 
-Scaffold only — files are initialized with empty structures. Content will be populated by the Skill Curator agent as the improvement loop runs.
+All files are written automatically by `skill_curator` in `workflows/improvement_loop.py`.
+`run_history.jsonl` is append-only. `successful_patterns.json` and `known_failures.json`
+are updated in-place after each run. Do not edit these files manually between runs.

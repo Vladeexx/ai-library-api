@@ -4,14 +4,16 @@
 
 Top-level agent that manages the full improvement loop. Receives a high-level goal and coordinates all other agents in sequence.
 
-## Planned responsibilities
+## Actual behavior
 
-- Parse the incoming goal and delegate to the Planner
-- Pass the plan to the Builder for implementation
-- Trigger the Tester to validate output
-- Route failures to the Fixer for repair
-- Signal the Skill Curator to record the outcome
+Pure dispatch loop — no sequencing logic. Initialises `RunState(goal)`, calls
+`decide_next_action(state)` on every iteration, dispatches through `AGENT_REGISTRY`,
+and repeats until action == `"done"`. All routing decisions live in
+`decide_next_action`.
 
-## Status
+Routing order: planner → builder → tester → (fixer or import_fixer) →
+planner (replan, once) → builder → tester → skill_curator.
 
-Scaffold only — not yet implemented.
+## Location
+
+`workflows/improvement_loop.py` — `orchestrator()` and `decide_next_action()`

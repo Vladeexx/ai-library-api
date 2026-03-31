@@ -4,13 +4,16 @@
 
 Validates the Builder's output by running the test suite and checking for regressions or missing coverage.
 
-## Planned responsibilities
+## Actual behavior
 
-- Run `make test` and capture output
-- Identify failing tests and likely root cause
-- Report pass/fail status back to the Orchestrator
-- Flag missing coverage for newly added functionality
+Runs `make test` via subprocess, captures stdout+stderr, sets `test_passed` and
+appends to `errors`. Calls `_classify_failure(test_output)` which returns one of:
+`import_error` / `test_failure` / `lint_error` / `unknown`.
 
-## Status
+`decide_next_action` routes to `import_fixer` for `import_error`, `fixer` for all
+other failures. After a post-failure replan and rebuild, tester re-runs and the
+result goes to `skill_curator`.
 
-Scaffold only — not yet implemented.
+## Location
+
+`workflows/improvement_loop.py` — `tester()` and `_classify_failure()`
