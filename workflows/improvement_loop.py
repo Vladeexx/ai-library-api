@@ -181,6 +181,25 @@ def _select_skill_from_triggers(goal: str, failure_type: str) -> Optional[tuple[
     return (best_skill, best_score) if best_skill else None
 
 
+def _load_prior_skill_notes(plan_type: str, skill: str) -> Optional[str]:
+    """
+    Return the skill_notes string stored by a prior successful run for this
+    plan_type/skill pair, or None if no entry exists or the field is absent.
+
+    This lets builder augment its guidance with conventions/constraints that
+    were active during a run that is known to have worked.
+    """
+    key = f"{plan_type}:{skill}"
+    patterns = _load_json_file(SUCCESSFUL_PATTERNS_FILE)
+    if not isinstance(patterns, dict):
+        return None
+    entry = patterns.get(key)
+    if not isinstance(entry, dict):
+        return None
+    notes = entry.get("skill_notes")
+    return notes if isinstance(notes, str) and notes else None
+
+
 def _find_repair_pattern(failure_type: str, missing_target: Optional[str]) -> Optional[dict]:
     """Return a prior successful repair entry for this failure_type + target, or None."""
     if not missing_target:
@@ -445,6 +464,25 @@ def builder(state: RunState) -> RunState:
                 log("builder", f"  applying convention: {convention}")
             for constraint in constraints:
                 log("builder", f"  applying constraint: {constraint}")
+
+            # Augment with notes from a prior successful run for this
+            # plan_type/skill pair.  If the stored notes differ from what the
+            # current skill file produced, append them with a clear prefix so
+            # the extra guidance is visible and traceable.
+            plan_type = state.plan.get("plan_type", "")
+            prior_notes = _load_prior_skill_notes(plan_type, skill)
+            if prior_notes and prior_notes != state.skill_notes:
+                log("builder", "prior successful skill_notes found — augmenting guidance")
+                state.skill_notes = (
+                    state.skill_notes + " | [prior success] " + prior_notes
+                    if state.skill_notes
+                    else "[prior success] " + prior_notes
+                )
+                state.executed_steps.append(
+                    f"[pattern:notes_reused] prior skill_notes applied for {skill!r}"
+                )
+            elif prior_notes:
+                log("builder", "prior skill_notes match current file — no additional guidance")
         else:
             log("builder", f"skill file not found for {skill!r}")
 
