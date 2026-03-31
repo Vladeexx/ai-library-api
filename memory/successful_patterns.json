@@ -1,5 +1,19 @@
 {
   "crud_endpoint_router_schema_tests": {
     "description": "For endpoint work, inspect routers and schemas together and always add tests."
+  },
+  "crud_endpoint:inspect_test_failure": {
+    "plan_type": "crud_endpoint",
+    "skill_used": "inspect_test_failure",
+    "skills_applied": [
+      "inspect_test_failure"
+    ],
+    "skill_notes": "conventions: Test output includes the file path, line number, and failing assertion; Prefer fixing the implementation over changing the test assertion; Only change the test assertion if the test expectation itself was wrong | constraints: Do not change test assertions to paper over a broken implementation; Do not add new tests to fix a failing test \u2014 fix the root cause instead; Do not modify files unrelated to the failing test",
+    "success_count": 2,
+    "example_goals": [
+      "add books CRUD endpoint"
+    ],
+    "last_seen": "2026-03-31T14:43:16.781711+00:00",
+    "summary": "crud_endpoint goals succeed with inspect_test_failure"
   }
 }

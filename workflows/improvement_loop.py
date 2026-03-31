@@ -29,6 +29,10 @@ class RunState:
     attempt_number: int = 1
     plan: dict = field(default_factory=dict)
     selected_skill: Optional[str] = None
+    # Skill chosen by the initial (plan_version == 1) planner call.  Never
+    # overwritten on replan so success recording always credits the primary
+    # implementation skill, not a recovery/replan skill.
+    primary_skill: Optional[str] = None
     # Skills that were loaded and consumed by builder during this run.
     skills_applied: list[str] = field(default_factory=list)
     # Conventions and constraints extracted from the loaded skill file.
@@ -233,7 +237,10 @@ def _update_successful_pattern(state: RunState) -> None:
     Keeps a running success_count and up to five distinct example goals.
     """
     plan_type = state.plan.get("plan_type")
-    skill = state.selected_skill
+    # Prefer the primary (initial-plan) skill over a replan/recovery skill so
+    # the pattern memory reflects what implementation approach succeeded, not
+    # which recovery skill was active at the end of the run.
+    skill = state.primary_skill or state.selected_skill
     if not plan_type or not skill:
         return
 
@@ -582,6 +589,11 @@ def builder(state: RunState) -> RunState:
             log("builder", f"skill file not found for {skill!r}")
 
     state.selected_skill = skill
+    # Capture the primary skill on the first build only.  On replan builds
+    # selected_skill will be overwritten with a recovery skill; primary_skill
+    # stays fixed so skill_curator can credit the right implementation skill.
+    if state.primary_skill is None and skill:
+        state.primary_skill = skill
     steps = state.plan.get("steps", [])
     total = len(steps)
     # Prefix replanned steps so run history clearly distinguishes them from
@@ -1122,6 +1134,7 @@ def skill_curator(state: RunState) -> RunState:
         "plan_type": state.plan.get("plan_type"),
         "builder_status": "completed",
         "skill_used": state.selected_skill,
+        "primary_skill": state.primary_skill or None,
         "skills_applied": state.skills_applied or None,
         "skill_notes": state.skill_notes or None,
         "pattern_hint": state.pattern_hint or None,
