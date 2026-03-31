@@ -879,16 +879,24 @@ def _apply_router_registration_patch(router_name: str, state: RunState) -> RunSt
     import_line = f"from app.api.v1 import {router_name}"
     include_line = f"router.include_router({router_name}.router)"
 
-    if import_line in existing and include_line in existing:
+    # Build a set of active lines only — blank lines and comment lines are
+    # excluded so that commented-out registrations are not mistaken for active ones.
+    active_lines = {
+        line.strip()
+        for line in existing.splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    }
+
+    if import_line in active_lines and include_line in active_lines:
         state.repair_summary = (
             f"router repair skipped: '{router_name}' already registered in {target_file}"
         )
         return state
 
     lines_to_append: list[str] = []
-    if import_line not in existing:
+    if import_line not in active_lines:
         lines_to_append.append(import_line)
-    if include_line not in existing:
+    if include_line not in active_lines:
         lines_to_append.append(include_line)
 
     try:
