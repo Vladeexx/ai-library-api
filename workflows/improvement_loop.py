@@ -838,7 +838,12 @@ def _detect_missing_router_registration(test_output: str) -> Optional[str]:
     if not m:
         return None
 
-    return m.group(1).lower()
+    name = m.group(1).lower()
+    # Normalize "_api" suffix: test files like "test_books_api.py" map to
+    # the router module "books", not "books_api" (repo convention uses plain names).
+    if name.endswith("_api"):
+        name = name[:-4]
+    return name
 
 
 def _apply_router_registration_patch(router_name: str, state: RunState) -> RunState:
