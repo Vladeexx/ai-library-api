@@ -2,18 +2,18 @@
   "crud_endpoint_router_schema_tests": {
     "description": "For endpoint work, inspect routers and schemas together and always add tests."
   },
-  "crud_endpoint:inspect_test_failure": {
+  "crud_endpoint:add_crud_endpoint": {
     "plan_type": "crud_endpoint",
-    "skill_used": "inspect_test_failure",
+    "skill_used": "add_crud_endpoint",
     "skills_applied": [
-      "inspect_test_failure"
+      "add_crud_endpoint"
     ],
-    "skill_notes": "conventions: Test output includes the file path, line number, and failing assertion; Prefer fixing the implementation over changing the test assertion; Only change the test assertion if the test expectation itself was wrong | constraints: Do not change test assertions to paper over a broken implementation; Do not add new tests to fix a failing test \u2014 fix the root cause instead; Do not modify files unrelated to the failing test",
-    "success_count": 2,
+    "skill_notes": "conventions: Router files live in app/api/v1/ and are registered in app/api/v1/router.py; Route handlers must be thin \u2014 delegate to a service module, not inline logic; Schemas follow the three-class pattern: <Resource>Create, <Resource>Update, <Resource>Read; Read schemas set from_attributes = True in model_config; Tests use async def and the client fixture from tests/conftest.py | constraints: Do not add business logic inside route handler functions; Do not create models without a corresponding Alembic migration; Do not skip tests for new endpoints; Do not hardcode database IDs in tests \u2014 use the id from the create response",
+    "success_count": 1,
     "example_goals": [
       "add books CRUD endpoint"
     ],
-    "last_seen": "2026-03-31T14:43:16.781711+00:00",
-    "summary": "crud_endpoint goals succeed with inspect_test_failure"
+    "last_seen": "2026-03-31T14:59:36.751787+00:00",
+    "summary": "crud_endpoint goals succeed with add_crud_endpoint"
   }
 }

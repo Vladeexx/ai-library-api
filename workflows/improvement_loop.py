@@ -128,6 +128,19 @@ def _find_relevant_patterns(goal: str, plan_type: str) -> list[str]:
     return relevant
 
 
+# Skills that exist solely to handle failures or replanning.  They must not
+# be chosen as the primary implementation skill on a clean initial run.
+_RECOVERY_SKILLS: frozenset[str] = frozenset({
+    "inspect_test_failure",
+    "fix_import_error",
+})
+
+
+def _is_recovery_skill(skill_name: Optional[str]) -> bool:
+    """Return True if the skill is a recovery/replan skill, not an implementation skill."""
+    return skill_name in _RECOVERY_SKILLS
+
+
 def _suggest_skill_from_patterns(plan_type: str) -> Optional[str]:
     """
     Return the skill with the highest success_count for plan_type in
@@ -406,8 +419,17 @@ def planner(state: RunState) -> RunState:
             if e.get("status") == "success" and e.get("skill_used")
         ]
         if successful:
-            preferred_skill = successful[-1]["skill_used"]
-            log("planner", f"previous successful skill detected: {preferred_skill}")
+            last_success = successful[-1]
+            # Prefer primary_skill (set since the two-skill fix) so we always
+            # credit the implementation skill.  Fall back to skill_used for
+            # older history entries that pre-date the primary_skill field.
+            candidate = last_success.get("primary_skill") or last_success.get("skill_used")
+            # Never carry a recovery skill forward into an initial clean run.
+            if candidate and not _is_recovery_skill(candidate):
+                preferred_skill = candidate
+                log("planner", f"previous successful skill detected: {preferred_skill}")
+            elif candidate:
+                log("planner", f"ignoring recovery skill {candidate!r} from history for initial plan")
 
     keywords = state.goal.lower()
 
@@ -449,12 +471,14 @@ def planner(state: RunState) -> RunState:
     # success even if the goal text is different.
     if not preferred_skill:
         pattern_skill = _suggest_skill_from_patterns(plan_type)
-        if pattern_skill:
+        if pattern_skill and not _is_recovery_skill(pattern_skill):
             preferred_skill = pattern_skill
             state.pattern_hint = (
                 f"skill {pattern_skill!r} suggested by successful_patterns for plan_type {plan_type!r}"
             )
             log("planner", f"pattern-suggested skill: {pattern_skill!r} (from successful_patterns.json)")
+        elif pattern_skill:
+            log("planner", f"ignoring recovery skill {pattern_skill!r} from patterns for initial plan")
 
     # Priority 3: trigger-based matching — evaluate Trigger sections from skill
     # files.  Only fires when priorities 1 and 2 produced nothing, so it acts as
@@ -463,11 +487,14 @@ def planner(state: RunState) -> RunState:
         trigger_result = _select_skill_from_triggers(state.goal, state.failure_type)
         if trigger_result:
             trigger_skill, trigger_score = trigger_result
-            preferred_skill = trigger_skill
-            state.pattern_hint = (
-                f"trigger-matched skill {trigger_skill!r} (score: {trigger_score})"
-            )
-            log("planner", f"trigger-matched skill: {trigger_skill!r} (score: {trigger_score})")
+            if not _is_recovery_skill(trigger_skill):
+                preferred_skill = trigger_skill
+                state.pattern_hint = (
+                    f"trigger-matched skill {trigger_skill!r} (score: {trigger_score})"
+                )
+                log("planner", f"trigger-matched skill: {trigger_skill!r} (score: {trigger_score})")
+            else:
+                log("planner", f"ignoring recovery skill {trigger_skill!r} from triggers for initial plan")
 
     relevant_patterns = _find_relevant_patterns(state.goal, plan_type)
     state.plan = {
