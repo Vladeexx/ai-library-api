@@ -645,11 +645,31 @@ def _classify_failure(test_output: str) -> str:
 
 
 def fixer(state: RunState) -> RunState:
-    log("fixer", "tests failed — a fix would be attempted here in a future phase")
     last_error = state.errors[-1] if state.errors else "unknown error"
-    state.fixer_notes = f"attempt {state.attempt_number} failed: {last_error}"
-    log("fixer", f"noted: {state.fixer_notes}")
-    state.executed_steps.append("fix attempted")
+
+    if state.failure_type == "test_failure":
+        log("fixer", "test_failure detected — attempting router registration repair")
+        router_name = _detect_missing_router_registration(state.test_output)
+        if router_name:
+            log("fixer", f"missing router detected: {router_name!r}")
+            state.executed_steps.append(f"fixer detected missing router: {router_name!r}")
+            state = _apply_router_registration_patch(router_name, state)
+            log("fixer", f"repair: {state.repair_summary}")
+            state.executed_steps.append(f"router repair: {state.repair_summary}")
+            state.fixer_notes = (
+                f"attempt {state.attempt_number}: router registration repair for '{router_name}'; "
+                f"{state.repair_summary}"
+            )
+        else:
+            log("fixer", "no missing router pattern found — no automatic repair available")
+            state.fixer_notes = f"attempt {state.attempt_number} failed: {last_error}"
+            state.executed_steps.append("fix attempted — no auto-repair for this test_failure")
+    else:
+        log("fixer", "tests failed — a fix would be attempted here in a future phase")
+        state.fixer_notes = f"attempt {state.attempt_number} failed: {last_error}"
+        log("fixer", f"noted: {state.fixer_notes}")
+        state.executed_steps.append("fix attempted")
+
     state.attempt_number += 1
     return state
 
@@ -787,6 +807,110 @@ def _build_patch_proposal(
 # Files that _apply_patch_proposal is permitted to modify automatically.
 # Deliberately narrow: only well-understood registration files.
 _PATCH_ALLOWLIST = {"alembic/env.py", "tests/conftest.py"}
+
+# Files that _apply_router_registration_patch is permitted to modify.
+_ROUTER_PATCH_ALLOWLIST = {"app/api/v1/router.py"}
+
+
+def _detect_missing_router_registration(test_output: str) -> Optional[str]:
+    """
+    Detect a likely missing router registration from pytest test_failure output.
+
+    Looks for assertion patterns that indicate a 404 response where a 2xx was
+    expected — the canonical symptom when a new router is not included in the
+    aggregating router file.
+
+    Extracts the router name from the test file path in the pytest traceback.
+    For example ``tests/test_authors.py`` → ``"authors"``.
+
+    Returns the router module name (e.g. ``"authors"``), or None if the pattern
+    is not recognised.
+    """
+    # Must see a 404 with an assertion error to avoid false positives.
+    has_404 = bool(re.search(r"\b404\b", test_output))
+    has_assertion = bool(re.search(r"(AssertionError|assert.*status_code)", test_output, re.IGNORECASE))
+    if not (has_404 and has_assertion):
+        return None
+
+    # Extract resource name from the test file that failed.
+    # e.g. "tests/test_authors.py" → "authors"
+    m = re.search(r"tests[/\\]test_(\w+)\.py", test_output)
+    if not m:
+        return None
+
+    return m.group(1).lower()
+
+
+def _apply_router_registration_patch(router_name: str, state: RunState) -> RunState:
+    """
+    Safely append a router registration line to app/api/v1/router.py.
+
+    Appends both an import and an include_router call for ``router_name`` if
+    neither is already present.
+
+    Safety gates:
+    - target file must be in _ROUTER_PATCH_ALLOWLIST
+    - target file must already exist (never creates files)
+    - import line must not already be present (idempotency)
+    - include_router line must not already be present (idempotency)
+    - only appends; never rewrites or truncates the file
+    """
+    target_file = "app/api/v1/router.py"
+    if target_file not in _ROUTER_PATCH_ALLOWLIST:
+        state.repair_summary = f"router repair skipped: '{target_file}' not in allowlist"
+        return state
+
+    full_path = REPO_ROOT / target_file
+    if not full_path.exists():
+        state.repair_summary = f"router repair skipped: '{target_file}' does not exist"
+        return state
+
+    try:
+        existing = full_path.read_text()
+    except OSError:
+        state.repair_summary = f"router repair skipped: could not read '{target_file}'"
+        return state
+
+    import_line = f"from app.api.v1 import {router_name}"
+    include_line = f"router.include_router({router_name}.router)"
+
+    if import_line in existing and include_line in existing:
+        state.repair_summary = (
+            f"router repair skipped: '{router_name}' already registered in {target_file}"
+        )
+        return state
+
+    lines_to_append: list[str] = []
+    if import_line not in existing:
+        lines_to_append.append(import_line)
+    if include_line not in existing:
+        lines_to_append.append(include_line)
+
+    try:
+        with full_path.open("a") as fh:
+            if existing and not existing.endswith("\n"):
+                fh.write("\n")
+            fh.write("\n".join(lines_to_append) + "\n")
+    except OSError as exc:
+        state.repair_summary = f"router repair failed: could not write to '{target_file}': {exc}"
+        return state
+
+    state.repair_applied = True
+    state.repair_summary = (
+        f"appended router registration for '{router_name}' to {target_file}: "
+        + "; ".join(lines_to_append)
+    )
+    # Store enough detail in suggested_fix for skill_curator / _update_repair_pattern.
+    state.suggested_fix = {
+        "missing_target": router_name,
+        "patch_proposal": {
+            "target_file": target_file,
+            "action": "add_router_registration",
+            "proposed_change": "; ".join(lines_to_append),
+            "confidence": "high",
+        },
+    }
+    return state
 
 
 def _apply_patch_proposal(proposal: dict, state: "RunState") -> "RunState":
