@@ -33,6 +33,9 @@ class RunState:
     skills_applied: list[str] = field(default_factory=list)
     # Conventions and constraints extracted from the loaded skill file.
     skill_notes: str = ""
+    # Set by planner when a successful pattern (not exact history) influenced
+    # skill selection.  Recorded in run_history so the influence is traceable.
+    pattern_hint: str = ""
     build_complete: bool = False
     executed_steps: list[str] = field(default_factory=list)
     test_passed: bool = False
@@ -111,6 +114,103 @@ def _find_relevant_patterns(goal: str, plan_type: str) -> list[str]:
     return relevant
 
 
+def _suggest_skill_from_patterns(plan_type: str) -> Optional[str]:
+    """
+    Return the skill with the highest success_count for plan_type in
+    successful_patterns.json.  Only considers structured entries written by
+    skill_curator (those that carry a 'plan_type' key).
+    """
+    patterns = _load_json_file(SUCCESSFUL_PATTERNS_FILE)
+    if not isinstance(patterns, dict):
+        return None
+    best_skill: Optional[str] = None
+    best_count = 0
+    for entry in patterns.values():
+        if not isinstance(entry, dict) or entry.get("plan_type") != plan_type:
+            continue
+        skill = entry.get("skill_used")
+        count = entry.get("success_count", 0)
+        if skill and count > best_count:
+            best_skill = skill
+            best_count = count
+    return best_skill
+
+
+def _find_repair_pattern(failure_type: str, missing_target: Optional[str]) -> Optional[dict]:
+    """Return a prior successful repair entry for this failure_type + target, or None."""
+    if not missing_target:
+        return None
+    key = f"repair:{failure_type}:{missing_target}"
+    patterns = _load_json_file(SUCCESSFUL_PATTERNS_FILE)
+    if not isinstance(patterns, dict):
+        return None
+    entry = patterns.get(key)
+    return entry if isinstance(entry, dict) else None
+
+
+def _update_successful_pattern(state: RunState) -> None:
+    """
+    Write or update a structured success entry in successful_patterns.json.
+    Key: "<plan_type>:<skill_used>"
+    Keeps a running success_count and up to five distinct example goals.
+    """
+    plan_type = state.plan.get("plan_type")
+    skill = state.selected_skill
+    if not plan_type or not skill:
+        return
+
+    key = f"{plan_type}:{skill}"
+    patterns = _load_json_file(SUCCESSFUL_PATTERNS_FILE)
+    if not isinstance(patterns, dict):
+        patterns = {}
+
+    entry = patterns.get(key, {})
+    goals: list[str] = entry.get("example_goals", [])
+    if state.goal not in goals:
+        goals = (goals + [state.goal])[-5:]  # keep at most five distinct examples
+
+    patterns[key] = {
+        "plan_type": plan_type,
+        "skill_used": skill,
+        "skills_applied": state.skills_applied or None,
+        "skill_notes": state.skill_notes or None,
+        "success_count": entry.get("success_count", 0) + 1,
+        "example_goals": goals,
+        "last_seen": datetime.now(timezone.utc).isoformat(),
+        "summary": f"{plan_type} goals succeed with {skill}",
+    }
+    SUCCESSFUL_PATTERNS_FILE.write_text(json.dumps(patterns, indent=2))
+    log("skill_curator", f"successful pattern updated: {key!r} (count: {patterns[key]['success_count']})")
+
+
+def _update_repair_pattern(state: RunState) -> None:
+    """
+    Record a successful repair in successful_patterns.json.
+    Key: "repair:<failure_type>:<missing_target>"
+    Future import_fixer runs can look this up to confirm a known-good fix.
+    """
+    missing_target = (state.suggested_fix or {}).get("missing_target")
+    if not missing_target or not state.failure_type or not state.repair_summary:
+        return
+
+    key = f"repair:{state.failure_type}:{missing_target}"
+    patterns = _load_json_file(SUCCESSFUL_PATTERNS_FILE)
+    if not isinstance(patterns, dict):
+        patterns = {}
+
+    entry = patterns.get(key, {})
+    patterns[key] = {
+        "failure_type": state.failure_type,
+        "missing_target": missing_target,
+        "repair_summary": state.repair_summary,
+        "patch_proposal": (state.suggested_fix or {}).get("patch_proposal"),
+        "success_count": entry.get("success_count", 0) + 1,
+        "last_seen": datetime.now(timezone.utc).isoformat(),
+    }
+    SUCCESSFUL_PATTERNS_FILE.write_text(json.dumps(patterns, indent=2))
+    log("skill_curator", f"successful repair pattern recorded: {key!r}")
+
+
 def _load_run_history() -> list[dict]:
     if not RUN_HISTORY.exists():
         return []
@@ -177,6 +277,19 @@ def planner(state: RunState) -> RunState:
     if last_failed:
         steps.insert(1, "review previous failure")
         log("planner", "adapting plan based on previous failure")
+
+    # If exact-goal history gave no preferred skill, check successful_patterns.json
+    # for any prior win with the same plan_type.  This is plan_type-level learning:
+    # a new goal of type "crud_endpoint" benefits from a prior "crud_endpoint" success
+    # even if the goal text is different.
+    if not preferred_skill:
+        pattern_skill = _suggest_skill_from_patterns(plan_type)
+        if pattern_skill:
+            preferred_skill = pattern_skill
+            state.pattern_hint = (
+                f"skill {pattern_skill!r} suggested by successful_patterns for plan_type {plan_type!r}"
+            )
+            log("planner", f"pattern-suggested skill: {pattern_skill!r} (from successful_patterns.json)")
 
     relevant_patterns = _find_relevant_patterns(state.goal, plan_type)
     state.plan = {
@@ -616,6 +729,18 @@ def import_fixer(state: RunState) -> RunState:
         missing_target = None
         is_internal = True  # no match: conservative fallback to internal advice
 
+    # Check successful_patterns.json for a prior repair of this exact target.
+    # If one exists we surface it immediately so the run history shows that a
+    # known-good fix was available — useful evidence even if the patch proposal
+    # produced below is identical.
+    prior_repair = _find_repair_pattern("import_error", missing_target)
+    if prior_repair:
+        count = prior_repair.get("success_count", 1)
+        log("import_fixer", f"prior successful repair found ({count}x): {prior_repair['repair_summary']}")
+        state.executed_steps.append(
+            f"[pattern] prior successful repair for {missing_target!r}: {prior_repair['repair_summary']}"
+        )
+
     if is_internal:
         state.suggested_fix = {
             "likely_cause": "missing or incorrect module import",
@@ -668,6 +793,7 @@ def skill_curator(state: RunState) -> RunState:
         "skill_used": state.selected_skill,
         "skills_applied": state.skills_applied or None,
         "skill_notes": state.skill_notes or None,
+        "pattern_hint": state.pattern_hint or None,
         "status": state.final_status,
         "steps_executed": state.executed_steps,
         "test_command": TEST_COMMAND,
@@ -681,6 +807,11 @@ def skill_curator(state: RunState) -> RunState:
     with RUN_HISTORY.open("a") as f:
         f.write(json.dumps(entry) + "\n")
     log("skill_curator", f"run recorded to memory/run_history.jsonl (status: {state.final_status})")
+
+    if state.final_status == "success" and state.selected_skill:
+        _update_successful_pattern(state)
+    if state.final_status == "success" and state.repair_applied:
+        _update_repair_pattern(state)
 
     if state.final_status == "failed":
         failure = {
