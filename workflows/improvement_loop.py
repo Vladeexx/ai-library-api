@@ -36,6 +36,16 @@ class RunState:
     # Set by planner when a successful pattern (not exact history) influenced
     # skill selection.  Recorded in run_history so the influence is traceable.
     pattern_hint: str = ""
+    # Incremented on every planner call: 0 = not yet planned, 1 = initial plan,
+    # 2+ = replanned after failure.  Lets planner detect replan context and lets
+    # run history show how many planning rounds occurred.
+    plan_version: int = 0
+    # True after the first post-failure replan.  Prevents replanning more than
+    # once per run and keeps decide_next_action routing predictable.
+    replanned: bool = False
+    # Short digest of the failure that triggered replanning.  Set by planner on
+    # replan and recorded in run_history for traceability.
+    last_failure_summary: str = ""
     build_complete: bool = False
     executed_steps: list[str] = field(default_factory=list)
     test_passed: bool = False
@@ -142,8 +152,12 @@ def _match_trigger(bullets: list[str], goal: str, failure_type: str) -> int:
     Returns the number of bullets that matched (0 = no match).
 
     Two bullet forms are evaluated; anything else scores 0:
-    - ``Goal contains "X"``  — checks whether any quoted keyword appears in goal
-    - ``failure_type == "X"`` — checks whether failure_type equals the quoted value
+    - ``Goal contains "X"``  — checks whether any quoted keyword appears in goal; scores 1
+    - ``failure_type == "X"`` — exact field match; scores 2 (more specific than a keyword)
+
+    The higher weight for failure_type matches ensures that when a failure is
+    active, skills designed for that failure beat general-purpose skills that
+    merely match a goal keyword.
     """
     score = 0
     goal_lower = goal.lower()
@@ -156,7 +170,7 @@ def _match_trigger(bullets: list[str], goal: str, failure_type: str) -> int:
         elif "failure_type" in b_lower and "==" in b_lower:
             m = re.search(r'"([^"]+)"', bullet)
             if m and m.group(1).lower() == failure_type.lower():
-                score += 1
+                score += 2  # exact field match outweighs goal keyword match
     return score
 
 
@@ -290,6 +304,87 @@ def _load_run_history() -> list[dict]:
 
 
 def planner(state: RunState) -> RunState:
+    # Increment plan_version before anything else so both the initial plan
+    # (version 1) and any replans (version 2+) are numbered consistently.
+    state.plan_version += 1
+
+    # ---- Post-failure replan ------------------------------------------------
+    # When plan_version > 1 we have already planned once and a test has since
+    # failed.  Run a shorter, failure-aware planning pass instead of the normal
+    # history-based one.
+    if state.plan_version > 1:
+        log("planner", f"replanning (v{state.plan_version}) — failure_type={state.failure_type!r}")
+
+        # Reset stale guidance from the previous plan so builder starts fresh
+        # with only the conventions/constraints relevant to the revised plan.
+        state.skills_applied = []
+        state.skill_notes = ""
+
+        # Build a one-line failure summary from the classified type and the
+        # first clause of fixer_notes (everything up to the first ";").
+        fixer_clause = (state.fixer_notes or "").split(";")[0].strip()
+        state.last_failure_summary = (
+            f"{state.failure_type}: {fixer_clause}" if fixer_clause else state.failure_type
+        )
+        log("planner", f"failure summary: {state.last_failure_summary}")
+
+        # Skill selection for replan — three sources in priority order:
+        # 1. Trigger matching with failure_type (score 2 beats goal keywords).
+        # 2. Successful-patterns fallback for the same plan_type.
+        # 3. Builder's SKILL_MAP hardcoded fallback (implicit, not set here).
+        replan_skill: Optional[str] = None
+        trigger_result = _select_skill_from_triggers(state.goal, state.failure_type)
+        if trigger_result:
+            replan_skill, score = trigger_result
+            log("planner", f"replan skill from triggers: {replan_skill!r} (score: {score})")
+        else:
+            plan_type_now = state.plan.get("plan_type", "generic")
+            replan_skill = _suggest_skill_from_patterns(plan_type_now)
+            if replan_skill:
+                log("planner", f"replan skill from successful patterns: {replan_skill!r}")
+            else:
+                log("planner", "no skill found — builder will use SKILL_MAP fallback")
+
+        # Targeted step list: first step always names the actual failure so the
+        # executed_steps entry carries real diagnostic context.
+        failure_step = f"inspect failure: {state.last_failure_summary}"
+        if state.failure_type == "import_error":
+            steps = [
+                failure_step,
+                "inspect alembic/env.py and tests/conftest.py for missing imports",
+                "add missing import registrations",
+                "run tests",
+            ]
+        elif state.failure_type == "test_failure":
+            steps = [
+                failure_step,
+                "inspect implementation for logic errors",
+                "apply targeted fix",
+                "run tests",
+            ]
+        else:
+            steps = [
+                failure_step,
+                "attempt targeted fix",
+                "run tests",
+            ]
+
+        state.plan = {
+            "plan_type": state.plan.get("plan_type", "generic"),
+            "preferred_skill": replan_skill,
+            "steps": steps,
+            "relevant_patterns": state.plan.get("relevant_patterns", []),
+        }
+        state.replanned = True
+        state.build_complete = False  # force builder to re-run with revised plan
+        state.executed_steps.append(
+            f"[replan v{state.plan_version}] replanned after {state.failure_type}"
+            f" — {len(steps)} revised steps, skill={replan_skill!r}"
+        )
+        log("planner", f"replan complete — {len(steps)} steps, preferred_skill={replan_skill!r}")
+        return state
+    # -------------------------------------------------------------------------
+
     history = _load_run_history()
     prior_runs = [e for e in history if e.get("goal") == state.goal]
     last_failed = False
@@ -489,9 +584,13 @@ def builder(state: RunState) -> RunState:
     state.selected_skill = skill
     steps = state.plan.get("steps", [])
     total = len(steps)
+    # Prefix replanned steps so run history clearly distinguishes them from
+    # initial-plan steps.  state.replanned is True only after planner has done
+    # a post-failure replan, so initial builds are unaffected.
+    step_prefix = "[builder step] " if state.replanned else ""
     for i, step in enumerate(steps, start=1):
         log("builder", f"step {i}/{total}: {step}")
-        state.executed_steps.append(step)
+        state.executed_steps.append(f"{step_prefix}{step}")
 
     # Append skill-specific steps after the plan steps so run history records
     # which concrete actions the skill directed. Prefixed with [skill:<name>]
@@ -889,6 +988,9 @@ def skill_curator(state: RunState) -> RunState:
         "skills_applied": state.skills_applied or None,
         "skill_notes": state.skill_notes or None,
         "pattern_hint": state.pattern_hint or None,
+        "plan_version": state.plan_version,
+        "replanned": state.replanned or None,
+        "last_failure_summary": state.last_failure_summary or None,
         "status": state.final_status,
         "steps_executed": state.executed_steps,
         "test_command": TEST_COMMAND,
@@ -969,6 +1071,19 @@ def decide_next_action(state: RunState) -> str:
         return "skill_curator"
     # Invariant: len(state.errors) == number of completed tester runs.
     # If errors < attempt_number, tester has not yet run this attempt.
+    #
+    # Replan window: fixer just ran and incremented attempt_number, so
+    # len(errors) == attempt_number - 1.  If we haven't replanned yet and
+    # failure_type is set, route back to planner for a failure-aware replan
+    # before the next tester run.  Guard: attempt_number > 1 ensures at least
+    # one fixer pass has happened.
+    if (
+        not state.replanned
+        and state.failure_type
+        and state.attempt_number > 1
+        and len(state.errors) == state.attempt_number - 1
+    ):
+        return "planner"
     if len(state.errors) < state.attempt_number:
         return "tester"
     # Tester ran and failed this attempt.
