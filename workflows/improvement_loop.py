@@ -136,6 +136,51 @@ def _suggest_skill_from_patterns(plan_type: str) -> Optional[str]:
     return best_skill
 
 
+def _match_trigger(bullets: list[str], goal: str, failure_type: str) -> int:
+    """
+    Score one skill's trigger list against the current goal and failure_type.
+    Returns the number of bullets that matched (0 = no match).
+
+    Two bullet forms are evaluated; anything else scores 0:
+    - ``Goal contains "X"``  — checks whether any quoted keyword appears in goal
+    - ``failure_type == "X"`` — checks whether failure_type equals the quoted value
+    """
+    score = 0
+    goal_lower = goal.lower()
+    for bullet in bullets:
+        b_lower = bullet.lower()
+        if b_lower.startswith("goal contains"):
+            keywords = re.findall(r'"([^"]+)"', bullet)
+            if any(kw.lower() in goal_lower for kw in keywords):
+                score += 1
+        elif "failure_type" in b_lower and "==" in b_lower:
+            m = re.search(r'"([^"]+)"', bullet)
+            if m and m.group(1).lower() == failure_type.lower():
+                score += 1
+    return score
+
+
+def _select_skill_from_triggers(goal: str, failure_type: str) -> Optional[tuple[str, int]]:
+    """
+    Scan every skill file in SKILLS_DIR and return ``(skill_name, score)`` for
+    the skill whose Trigger section best matches the goal and failure_type.
+    Returns None if no skill scores above zero.
+
+    Ties are broken alphabetically by filename so results are deterministic.
+    """
+    best_skill: Optional[str] = None
+    best_score = 0
+    for skill_file in sorted(SKILLS_DIR.glob("*.md")):
+        triggers = _parse_skill(skill_file).get("trigger", [])
+        if not triggers:
+            continue
+        score = _match_trigger(triggers, goal, failure_type)
+        if score > best_score:
+            best_skill = skill_file.stem
+            best_score = score
+    return (best_skill, best_score) if best_skill else None
+
+
 def _find_repair_pattern(failure_type: str, missing_target: Optional[str]) -> Optional[dict]:
     """Return a prior successful repair entry for this failure_type + target, or None."""
     if not missing_target:
@@ -278,10 +323,9 @@ def planner(state: RunState) -> RunState:
         steps.insert(1, "review previous failure")
         log("planner", "adapting plan based on previous failure")
 
-    # If exact-goal history gave no preferred skill, check successful_patterns.json
-    # for any prior win with the same plan_type.  This is plan_type-level learning:
-    # a new goal of type "crud_endpoint" benefits from a prior "crud_endpoint" success
-    # even if the goal text is different.
+    # Priority 2: successful_patterns.json — plan_type-level memory.
+    # A new goal of type "crud_endpoint" benefits from a prior "crud_endpoint"
+    # success even if the goal text is different.
     if not preferred_skill:
         pattern_skill = _suggest_skill_from_patterns(plan_type)
         if pattern_skill:
@@ -290,6 +334,19 @@ def planner(state: RunState) -> RunState:
                 f"skill {pattern_skill!r} suggested by successful_patterns for plan_type {plan_type!r}"
             )
             log("planner", f"pattern-suggested skill: {pattern_skill!r} (from successful_patterns.json)")
+
+    # Priority 3: trigger-based matching — evaluate Trigger sections from skill
+    # files.  Only fires when priorities 1 and 2 produced nothing, so it acts as
+    # a structured fallback that is smarter than the hardcoded SKILL_MAP.
+    if not preferred_skill:
+        trigger_result = _select_skill_from_triggers(state.goal, state.failure_type)
+        if trigger_result:
+            trigger_skill, trigger_score = trigger_result
+            preferred_skill = trigger_skill
+            state.pattern_hint = (
+                f"trigger-matched skill {trigger_skill!r} (score: {trigger_score})"
+            )
+            log("planner", f"trigger-matched skill: {trigger_skill!r} (score: {trigger_score})")
 
     relevant_patterns = _find_relevant_patterns(state.goal, plan_type)
     state.plan = {
