@@ -29,6 +29,10 @@ class RunState:
     attempt_number: int = 1
     plan: dict = field(default_factory=dict)
     selected_skill: Optional[str] = None
+    # Skills that were loaded and consumed by builder during this run.
+    skills_applied: list[str] = field(default_factory=list)
+    # Conventions and constraints extracted from the loaded skill file.
+    skill_notes: str = ""
     build_complete: bool = False
     executed_steps: list[str] = field(default_factory=list)
     test_passed: bool = False
@@ -198,6 +202,35 @@ SKILL_MAP = {
 SKILLS_DIR = Path(__file__).parent.parent / ".claude" / "skills" / "coding"
 
 
+def _parse_skill(skill_path: Path) -> dict[str, list[str]]:
+    """
+    Parse a markdown skill file into a dict of section_name -> [bullet items].
+
+    Only ``## `` headings become section keys (lowercased, spaces → underscores).
+    Lines starting with ``- `` inside a section are collected as items.
+    Prose lines and sub-headings are ignored so the parser stays simple.
+
+    Example — given a skill with::
+
+        ## Steps
+        - Inspect existing routers
+        - Create the endpoint file
+
+    Returns ``{"steps": ["Inspect existing routers", "Create the endpoint file"], ...}``.
+    """
+    result: dict[str, list[str]] = {}
+    current_section: Optional[str] = None
+
+    for line in skill_path.read_text().splitlines():
+        if line.startswith("## "):
+            current_section = line[3:].strip().lower().replace(" ", "_")
+            result.setdefault(current_section, [])
+        elif current_section and line.strip().startswith("- "):
+            result[current_section].append(line.strip()[2:].strip())
+
+    return result
+
+
 def builder(state: RunState) -> RunState:
     log("builder", "starting execution")
 
@@ -212,13 +245,38 @@ def builder(state: RunState) -> RunState:
         else:
             log("builder", "no specific skill for this plan type")
 
+    skill_steps: list[str] = []
+
     if skill:
         skill_file = SKILLS_DIR / f"{skill}.md"
         if skill_file.exists():
-            skill_file.read_text()
-            log("builder", f"loaded skill definition for {skill}")
+            parsed = _parse_skill(skill_file)
+
+            conventions = parsed.get("conventions", [])
+            constraints = parsed.get("constraints", [])
+            skill_steps = parsed.get("steps", [])
+
+            # Build a human-readable summary of what the skill contributed.
+            notes_parts: list[str] = []
+            if conventions:
+                notes_parts.append("conventions: " + "; ".join(conventions))
+            if constraints:
+                notes_parts.append("constraints: " + "; ".join(constraints))
+            state.skill_notes = " | ".join(notes_parts)
+
+            state.skills_applied.append(skill)
+
+            log("builder", f"loaded skill {skill!r}: "
+                f"{len(skill_steps)} steps, "
+                f"{len(conventions)} conventions, "
+                f"{len(constraints)} constraints")
+
+            for convention in conventions:
+                log("builder", f"  applying convention: {convention}")
+            for constraint in constraints:
+                log("builder", f"  applying constraint: {constraint}")
         else:
-            log("builder", "skill definition file not found")
+            log("builder", f"skill file not found for {skill!r}")
 
     state.selected_skill = skill
     steps = state.plan.get("steps", [])
@@ -226,6 +284,16 @@ def builder(state: RunState) -> RunState:
     for i, step in enumerate(steps, start=1):
         log("builder", f"step {i}/{total}: {step}")
         state.executed_steps.append(step)
+
+    # Append skill-specific steps after the plan steps so run history records
+    # which concrete actions the skill directed. Prefixed with [skill:<name>]
+    # to make the source clear.
+    if skill_steps:
+        log("builder", f"executing {len(skill_steps)} skill-directed steps from {skill!r}")
+        for skill_step in skill_steps:
+            log("builder", f"  [skill:{skill}] {skill_step}")
+            state.executed_steps.append(f"[skill:{skill}] {skill_step}")
+
     state.build_complete = True
     return state
 
@@ -598,6 +666,8 @@ def skill_curator(state: RunState) -> RunState:
         "plan_type": state.plan.get("plan_type"),
         "builder_status": "completed",
         "skill_used": state.selected_skill,
+        "skills_applied": state.skills_applied or None,
+        "skill_notes": state.skill_notes or None,
         "status": state.final_status,
         "steps_executed": state.executed_steps,
         "test_command": TEST_COMMAND,
